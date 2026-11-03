@@ -10,7 +10,7 @@ set -euo pipefail
 
 REPO_URL="https://github.com/bballer320xu/claude-swap"
 PYTHON_VERSION="3.13"
-APP_BUNDLE="/Applications/claude-swap Menubar.app"
+APP_BUNDLE="${CSWAP_APP_BUNDLE:-/Applications/claude-swap Menubar.app}"
 SERVICE_LOG="$HOME/Library/Logs/com.cswap.menubar.err"
 
 ref="main"

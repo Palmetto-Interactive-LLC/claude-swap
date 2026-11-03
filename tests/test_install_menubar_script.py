@@ -30,6 +30,8 @@ class _Stubs:
         self.bin_dir = root / "bin"
         self.calls = root / "calls.log"
         self.home = root / "home"
+        # Never the real one: --uninstall deletes this path.
+        self.app_bundle = root / "claude-swap Menubar.app"
         for directory in (self.path_dir, self.tool_dir / "claude-swap" / "bin", self.bin_dir, self.home):
             directory.mkdir(parents=True)
         self.calls.touch()
@@ -81,6 +83,7 @@ esac""",
         self.write()
         env = {
             "HOME": str(self.home),
+            "CSWAP_APP_BUNDLE": str(self.app_bundle),
             "PATH": os.pathsep.join(
                 filter(None, [str(self.path_dir), str(self.bin_dir), path_extra, "/usr/bin", "/bin"])
             ),
@@ -185,10 +188,12 @@ def test_warns_when_another_cswap_comes_first_on_path(stubs: _Stubs, tmp_path: P
 
 def test_uninstall_removes_the_service_and_tool_and_keeps_accounts(stubs: _Stubs) -> None:
     assert stubs.run("--no-service").returncode == 0
+    stubs.app_bundle.mkdir()
 
     result = stubs.run("--uninstall")
 
     assert result.returncode == 0, result.stderr
+    assert not stubs.app_bundle.exists()
     assert "cswap menubar --uninstall-service" in stubs.logged
     assert "uv tool uninstall claude-swap" in stubs.logged
     assert "accounts are still" in result.stdout
@@ -214,6 +219,7 @@ def _piped(stubs: _Stubs, *args: str) -> subprocess.CompletedProcess[str]:
     stubs.write()
     env = {
         "HOME": str(stubs.home),
+        "CSWAP_APP_BUNDLE": str(stubs.app_bundle),
         "PATH": os.pathsep.join([str(stubs.path_dir), str(stubs.bin_dir), "/usr/bin", "/bin"]),
     }
     return subprocess.run(
