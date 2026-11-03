@@ -6,6 +6,9 @@ import pytest
 
 from claude_swap.menubar_layout import (
     BUTTON_HEIGHT,
+    COLOR_BAD,
+    COLOR_GOOD,
+    COLOR_WARN,
     MAX_USAGE_LINES,
     MainPopoverLayout,
     POPOVER_MAX_HEIGHT,
@@ -151,3 +154,33 @@ def test_secondary_screen_fits_short_content_and_scrolls_long_content() -> None:
 def test_planners_reject_invalid_item_sizes(planner, values) -> None:
     with pytest.raises(ValueError):
         planner(values)
+
+
+def _luminance(rgb: tuple[float, float, float]) -> float:
+    def channel(value: float) -> float:
+        value /= 255
+        return value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4
+
+    return 0.2126 * channel(rgb[0]) + 0.7152 * channel(rgb[1]) + 0.0722 * channel(rgb[2])
+
+
+def _contrast(hex_color: str, background: tuple[float, float, float]) -> float:
+    rgb = tuple(int(hex_color[index : index + 2], 16) for index in (1, 3, 5))
+    high, low = sorted((_luminance(rgb), _luminance(background)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+# Measured from a screenshot of the backed popover over a mid-tone desktop.
+_MEASURED_ROW = (47.0, 51.0, 62.0)
+_MEASURED_ACTIVE_ROW = (65.0, 69.0, 76.0)
+
+
+@pytest.mark.parametrize("pair", [COLOR_GOOD, COLOR_WARN, COLOR_BAD])
+def test_status_colors_are_readable_on_the_dark_panel(pair) -> None:
+    assert _contrast(pair[0], _MEASURED_ROW) >= 4.5
+    assert _contrast(pair[0], _MEASURED_ACTIVE_ROW) >= 3.5
+
+
+@pytest.mark.parametrize("pair", [COLOR_GOOD, COLOR_WARN, COLOR_BAD])
+def test_status_colors_are_readable_in_light_mode(pair) -> None:
+    assert _contrast(pair[1], (236.0, 236.0, 238.0)) >= 4.5

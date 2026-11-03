@@ -12,7 +12,12 @@ from typing import TYPE_CHECKING
 
 from claude_swap.exceptions import ClaudeSwitchError
 from claude_swap.menubar_layout import (
+    BACKING_DARK_ALPHA,
+    BACKING_LIGHT_ALPHA,
     BUTTON_HEIGHT,
+    COLOR_BAD,
+    COLOR_GOOD,
+    COLOR_WARN,
     POPOVER_MAX_HEIGHT,
     POPOVER_WIDTH,
     Rect,
@@ -78,6 +83,31 @@ def require_appkit() -> None:
             "Menu bar mode requires PyObjC/AppKit. Install with: pip install "
             "'claude-swap[menubar]'"
         )
+
+
+def _srgb(hex_color: str):
+    return AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(
+        int(hex_color[1:3], 16) / 255,
+        int(hex_color[3:5], 16) / 255,
+        int(hex_color[5:7], 16) / 255,
+        1.0,
+    )
+
+
+def _dynamic_color(dark, light):
+    """A color that resolves for whichever appearance it's drawn in."""
+
+    def provider(appearance):
+        best = appearance.bestMatchFromAppearancesWithNames_(
+            [AppKit.NSAppearanceNameAqua, AppKit.NSAppearanceNameDarkAqua]
+        )
+        return dark if best == AppKit.NSAppearanceNameDarkAqua else light
+
+    return AppKit.NSColor.colorWithName_dynamicProvider_(None, provider)
+
+
+def _status_color(pair: tuple[str, str]):
+    return _dynamic_color(_srgb(pair[0]), _srgb(pair[1]))
 
 
 def _draw_status_icon() -> bool:
@@ -330,10 +360,10 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
         @objc.python_method
         def _usage_color(self, state: CapacityState):
             if state is CapacityState.LIMIT_REACHED:
-                return AppKit.NSColor.systemRedColor()
+                return _status_color(COLOR_BAD)
             if state is CapacityState.NEAR_LIMIT:
-                return AppKit.NSColor.systemOrangeColor()
-            return AppKit.NSColor.systemGreenColor()
+                return _status_color(COLOR_WARN)
+            return _status_color(COLOR_GOOD)
 
         @objc.python_method
         def _usage_line(self, row: UsageRowViewModel, line, parent) -> None:
@@ -381,7 +411,6 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
                     usage_time_left(row),
                     line.time_left,
                     size=10.5,
-                    color=secondary,
                     align_right=True,
                     digits=True,
                 )
@@ -392,7 +421,7 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
                         row.reset_clock,
                         line.clock,
                         size=10.5,
-                        color=AppKit.NSColor.tertiaryLabelColor(),
+                        color=secondary,
                         align_right=True,
                         digits=True,
                     )
@@ -418,7 +447,7 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
                         f"  {account.plan_label}".replace(" ", "\u00a0"),
                         {
                             AppKit.NSFontAttributeName: AppKit.NSFont.systemFontOfSize_(10.0),
-                            AppKit.NSForegroundColorAttributeName: AppKit.NSColor.tertiaryLabelColor(),
+                            AppKit.NSForegroundColorAttributeName: AppKit.NSColor.secondaryLabelColor(),
                         },
                     )
                 )
@@ -434,7 +463,7 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
             document.addSubview_(row)
             expired = account_login_expired(account)
             if account.is_active:
-                row.resting_color = AppKit.NSColor.labelColor().colorWithAlphaComponent_(0.08)
+                row.resting_color = AppKit.NSColor.labelColor().colorWithAlphaComponent_(0.06)
                 row.fill_color = row.resting_color
             else:
                 slot = account.number
@@ -445,11 +474,11 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
             status = account_status_text(account)
             if status:
                 if account.is_active:
-                    status_color = AppKit.NSColor.systemGreenColor()
+                    status_color = _status_color(COLOR_GOOD)
                 elif expired:
-                    status_color = AppKit.NSColor.systemOrangeColor()
+                    status_color = _status_color(COLOR_WARN)
                 elif account_at_limit(account) or status.startswith("Rejected"):
-                    status_color = AppKit.NSColor.systemRedColor()
+                    status_color = _status_color(COLOR_BAD)
                 else:
                     status_color = AppKit.NSColor.secondaryLabelColor()
                 row.addSubview_(
@@ -514,6 +543,15 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
         def _resize_root(self, root, frame: Rect) -> None:
             root.setFrameSize_(AppKit.NSMakeSize(frame.width, frame.height))
             self.host.popover.setContentSize_(AppKit.NSMakeSize(frame.width, frame.height))
+            root.addSubview_(
+                self._fill(
+                    _dynamic_color(
+                        AppKit.NSColor.blackColor().colorWithAlphaComponent_(BACKING_DARK_ALPHA),
+                        AppKit.NSColor.whiteColor().colorWithAlphaComponent_(BACKING_LIGHT_ALPHA),
+                    ),
+                    frame,
+                )
+            )
 
         @objc.python_method
         def _main_layout(self, model: MenuBarPopoverViewModel):
@@ -535,7 +573,7 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
                     message,
                     layout.message,
                     size=10.0,
-                    color=AppKit.NSColor.systemRedColor()
+                    color=_status_color(COLOR_BAD)
                     if message.startswith("Couldn't")
                     else AppKit.NSColor.secondaryLabelColor(),
                 )

@@ -25,6 +25,16 @@ SESSION_BUTTON_SIZE = 18.0
 USAGE_LINE_HEIGHT = 16.0
 MAX_USAGE_LINES = 5
 
+# Status colors as (dark mode, light mode) sRGB hex. The system colors are built
+# for opaque windows: on a translucent popover over a mid-tone wallpaper,
+# systemRed measured 1.3-1.7:1 against its background. The backing dims that
+# wallpaper so these hold up on any desktop.
+COLOR_GOOD = ("#4ADE80", "#0B7A3B")
+COLOR_WARN = ("#FFC766", "#9A5B00")
+COLOR_BAD = ("#FF7A6E", "#B3261E")
+BACKING_DARK_ALPHA = 0.55  # black over the popover material in dark mode
+BACKING_LIGHT_ALPHA = 0.55  # white over the popover material in light mode
+
 _ROW_WIDTH = POPOVER_WIDTH - 2 * ROW_INSET
 _ROW_PADDING = 10.0
 _TEXT_X = _ROW_PADDING + AVATAR_SIZE + 8.0
@@ -224,6 +234,11 @@ def plan_scroll_screen(item_heights: Sequence[float]) -> ScrollScreenLayout:
 
 
 __all__ = [
+    "BACKING_DARK_ALPHA",
+    "BACKING_LIGHT_ALPHA",
+    "COLOR_BAD",
+    "COLOR_GOOD",
+    "COLOR_WARN",
     "AVATAR_SIZE",
     "AccountRowLayout",
     "BUTTON_HEIGHT",
