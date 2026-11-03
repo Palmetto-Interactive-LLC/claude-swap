@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from datetime import datetime, timezone
 
 import pytest
@@ -233,7 +233,7 @@ def _compact_row(label, scope, percent):
     return viewmodel._usage_row(label, scope, {"pct": percent}, _NOW, None)
 
 
-def test_compact_usage_rows_keep_windows_then_the_tightest_model_limit():
+def test_compact_usage_rows_list_windows_then_model_limits_then_spend():
     scopes = viewmodel.UsageScope
     rows = (
         _compact_row("Spend", scopes.SPEND, 90.0),
@@ -245,7 +245,40 @@ def test_compact_usage_rows_keep_windows_then_the_tightest_model_limit():
 
     compact = viewmodel.compact_usage_rows(_compact_account(rows))
 
-    assert [row.label for row in compact] == ["5h", "7d", "Fable"]
+    assert [row.label for row in compact] == ["5h", "7d", "Fable", "Sonnet", "Spend"]
+
+
+def test_time_left_is_never_blank():
+    scopes = viewmodel.UsageScope
+    resets_at = datetime.fromtimestamp(_NOW + 3600, tz=timezone.utc).isoformat()
+    counting = viewmodel._usage_row("5h", scopes.FIVE_HOUR, {"pct": 8.0, "resets_at": resets_at}, _NOW, None)
+    idle = _compact_row("5h", scopes.FIVE_HOUR, 0.0)
+    passed = _compact_row("5h", scopes.FIVE_HOUR, 40.0)
+
+    assert viewmodel.usage_time_left(counting) == "1h 0m"
+    assert viewmodel.usage_time_left(idle) == "not started"
+    assert viewmodel.usage_time_left(passed) == "reset due"
+
+
+def test_reset_clock_shows_a_time_today_and_a_date_otherwise():
+    scopes = viewmodel.UsageScope
+    now = datetime(2026, 11, 3, 12, 0).timestamp()
+
+    def row(when):
+        resets_at = when.astimezone(timezone.utc).isoformat()
+        return viewmodel._usage_row("7d", scopes.SEVEN_DAY, {"pct": 1.0, "resets_at": resets_at}, now, None)
+
+    assert row(datetime(2026, 11, 3, 19, 0)).reset_clock == "19:00"
+    assert row(datetime(2026, 11, 8, 10, 0)).reset_clock == "Nov 8 10:00"
+    assert _compact_row("7d", scopes.SEVEN_DAY, 1.0).reset_clock is None
+
+
+def test_badge_initial_comes_from_the_alias_then_the_email_domain():
+    account = _compact_account(())
+
+    assert viewmodel.account_initial(account) == "E"
+    assert viewmodel.account_initial(replace(account, alias="work")) == "W"
+    assert viewmodel.account_initial(replace(account, email="plain")) == "P"
 
 
 def test_expired_login_shows_no_meters_and_cannot_be_activated():
@@ -258,16 +291,25 @@ def test_expired_login_shows_no_meters_and_cannot_be_activated():
 
 
 def test_status_text_and_activation_follow_account_state():
+    scopes = viewmodel.UsageScope
     active = _compact_account((), active=True)
     disabled = _compact_account((), disabled=True)
     plain = _compact_account(())
+    full = _compact_account((_compact_row("7d", scopes.SEVEN_DAY, 100.0),))
+    overspent = _compact_account((_compact_row("Spend", scopes.SPEND, 100.0),))
 
     assert viewmodel.account_status_text(active) == "Active"
     assert not viewmodel.account_can_activate(active)
     assert viewmodel.account_status_text(disabled) == "Disabled"
     assert viewmodel.account_can_activate(disabled)
-    assert viewmodel.account_status_text(plain) == "60% left"
+    assert viewmodel.account_status_text(plain) == ""
     assert viewmodel.account_can_activate(plain)
+    assert viewmodel.account_status_text(full) == "At limit"
+    assert viewmodel.account_status_text(overspent) == ""
+    assert (
+        viewmodel.account_status_text(replace(plain, capacity_summary="Rejected 1h 0m"))
+        == "Rejected 1h 0m"
+    )
 
 
 def test_tooltip_keeps_what_the_compact_row_leaves_out():
@@ -280,4 +322,4 @@ def test_tooltip_keeps_what_the_compact_row_leaves_out():
 
     assert "person@example.test" in tooltip
     assert "Updated just now" in tooltip
-    assert "7d: 40%, resets in 1h 0m" in tooltip
+    assert "7d: 40%, resets in 1h 0m (" in tooltip

@@ -6,12 +6,12 @@ import pytest
 
 from claude_swap.menubar_layout import (
     BUTTON_HEIGHT,
-    MAX_USAGE_CELLS,
+    MAX_USAGE_LINES,
     MainPopoverLayout,
     POPOVER_MAX_HEIGHT,
     POPOVER_WIDTH,
-    ROW_HEIGHT,
     Rect,
+    USAGE_LINE_HEIGHT,
     button_row,
     plan_main_popover,
     plan_scroll_screen,
@@ -27,11 +27,7 @@ def _assert_disjoint(frames: tuple[Rect, ...]) -> None:
 def _assert_main_chrome(layout: MainPopoverLayout) -> None:
     assert layout.accounts_viewport.y == layout.header.max_y
     assert layout.accounts_document_height >= layout.accounts_viewport.height
-    if layout.footer is not None:
-        assert layout.footer.y == layout.accounts_viewport.max_y
-        assert layout.root.height == layout.footer.max_y
-    else:
-        assert layout.root.height == layout.accounts_viewport.max_y
+    assert layout.root.height == layout.accounts_viewport.max_y
 
 
 def _assert_contained(child: Rect, width: float, height: float) -> None:
@@ -45,18 +41,26 @@ def test_popover_is_well_under_half_the_original_430_by_620_area() -> None:
     assert POPOVER_WIDTH * POPOVER_MAX_HEIGHT <= 0.5 * 430.0 * 620.0
 
 
-def test_a_typical_long_email_gets_the_full_name_column() -> None:
+def test_the_email_and_plan_get_room_on_the_first_line() -> None:
     row = plan_main_popover((2,)).accounts[0]
 
-    assert row.name.width >= 200.0
+    assert row.name.width >= 234.0
 
 
-def test_six_accounts_fit_without_scrolling() -> None:
-    layout = plan_main_popover((2,) * 6)
+def test_the_columns_fit_a_full_percent_and_a_full_reset_clock() -> None:
+    line = plan_main_popover((1,)).accounts[0].usage_lines[0]
+
+    assert line.percent.width >= 38.0
+    assert line.clock.width >= 72.0
+    assert line.bar.width >= 80.0
+
+
+def test_two_accounts_with_three_limits_stay_compact() -> None:
+    layout = plan_main_popover((3, 3))
 
     _assert_main_chrome(layout)
+    assert layout.root.height < 0.7 * POPOVER_MAX_HEIGHT
     assert layout.accounts_document_height == layout.accounts_viewport.height
-    assert layout.root.height <= POPOVER_MAX_HEIGHT
 
 
 def test_main_layout_handles_no_accounts_without_a_tall_artificial_document() -> None:
@@ -68,20 +72,35 @@ def test_main_layout_handles_no_accounts_without_a_tall_artificial_document() ->
     assert layout.accounts_document_height == layout.accounts_viewport.height == 48.0
 
 
-@pytest.mark.parametrize("cells", range(MAX_USAGE_CELLS + 1))
-def test_row_children_stay_inside_the_row(cells: int) -> None:
-    row = plan_main_popover((cells,)).accounts[0]
+@pytest.mark.parametrize("lines", range(MAX_USAGE_LINES + 1))
+def test_row_children_stay_inside_the_row(lines: int) -> None:
+    row = plan_main_popover((lines,)).accounts[0]
 
-    assert row.frame.height == ROW_HEIGHT
-    assert len(row.usage_cells) == cells
+    assert len(row.usage_lines) == lines
     assert row.frame.width + 2 * row.frame.x == POPOVER_WIDTH
-    for child in (row.avatar, row.name, row.status, row.detail, row.session_button):
+    for child in (row.avatar, row.name, row.status, row.session_button, row.detail):
         _assert_contained(child, row.frame.width, row.frame.height)
-    meters = tuple(frame for cell in row.usage_cells for frame in (cell.text, cell.bar))
-    for frame in meters:
+    columns = tuple(
+        frame
+        for line in row.usage_lines
+        for frame in (line.label, line.bar, line.percent, line.time_left, line.clock)
+    )
+    for frame in columns:
         _assert_contained(frame, row.frame.width, row.frame.height)
-    _assert_disjoint((row.avatar, row.name, row.status))
-    _assert_disjoint((*meters, row.avatar, row.session_button, row.name))
+    _assert_disjoint((row.avatar, row.name, row.session_button, row.status))
+    _assert_disjoint((*columns, row.avatar, row.name, row.status))
+
+
+def test_a_row_grows_by_one_line_per_limit() -> None:
+    one, three = plan_main_popover((1, 3)).accounts
+
+    assert three.frame.height - one.frame.height == 2 * USAGE_LINE_HEIGHT
+
+
+def test_a_row_with_no_limits_still_has_a_line_for_its_detail() -> None:
+    none, one = plan_main_popover((0, 1)).accounts
+
+    assert none.frame.height == one.frame.height
 
 
 def test_rows_do_not_overlap_and_only_the_list_grows_for_long_lists() -> None:
@@ -92,21 +111,6 @@ def test_rows_do_not_overlap_and_only_the_list_grows_for_long_lists() -> None:
     assert layout.accounts_document_height > layout.accounts_viewport.height
     _assert_disjoint(tuple(row.frame for row in layout.accounts))
     assert all(row.frame.max_y <= layout.accounts_document_height for row in layout.accounts)
-
-
-def test_footer_has_one_row_of_three_and_can_be_left_out() -> None:
-    with_footer = plan_main_popover((1,))
-    frames = (with_footer.switch_best, with_footer.next_available, with_footer.rotate_next)
-
-    assert {frame.y for frame in frames} == {with_footer.footer.y + 8.0}
-    _assert_disjoint(frames)
-    assert all(frame.max_y <= with_footer.footer.max_y for frame in frames)
-
-    without = plan_main_popover((1,), has_footer=False)
-    _assert_main_chrome(without)
-    assert without.footer is None
-    assert without.switch_best is None
-    assert without.root.height < with_footer.root.height
 
 
 def test_header_controls_do_not_overlap_the_title_or_message() -> None:
@@ -140,7 +144,7 @@ def test_secondary_screen_fits_short_content_and_scrolls_long_content() -> None:
     "planner, values",
     [
         (plan_main_popover, (-1,)),
-        (plan_main_popover, (MAX_USAGE_CELLS + 1,)),
+        (plan_main_popover, (MAX_USAGE_LINES + 1,)),
         (plan_scroll_screen, (0.0,)),
     ],
 )

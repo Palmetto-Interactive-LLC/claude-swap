@@ -30,11 +30,14 @@ from claude_swap.menubar_viewmodel import (
     MenuBarPopoverViewModel,
     PopoverAccountViewModel,
     UsageRowViewModel,
+    account_at_limit,
     account_can_activate,
+    account_initial,
     account_login_expired,
     account_status_text,
     account_tooltip,
     compact_usage_rows,
+    usage_time_left,
 )
 
 if TYPE_CHECKING:
@@ -143,6 +146,7 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
             if self is None:
                 return None
             self.on_activate = None
+            self.hover_views = ()
             self.resting_color = None
             self.fill_color = None
             self.corner_radius = 8.0
@@ -175,9 +179,13 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
         def mouseEntered_(self, _event) -> None:
             if self.on_activate is not None:
                 self._set_fill(AppKit.NSColor.labelColor().colorWithAlphaComponent_(0.07))
+            for view in self.hover_views:
+                view.setHidden_(False)
 
         def mouseExited_(self, _event) -> None:
             self._set_fill(self.resting_color)
+            for view in self.hover_views:
+                view.setHidden_(True)
 
         def mouseDown_(self, _event) -> None:
             if self.on_activate is not None:
@@ -309,9 +317,9 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
                 color = color.colorWithAlphaComponent_(0.55)
             badge = self._fill(color, frame, radius=frame.width / 2)
             initial = self._label(
-                account.display_name[:1].upper(),
-                Rect(0.0, 4.0, frame.width, 16.0),
-                size=12.0,
+                account_initial(account),
+                Rect(0.0, 3.0, frame.width, 14.0),
+                size=11.0,
                 weight=AppKit.NSFontWeightSemibold,
                 color=AppKit.NSColor.whiteColor(),
             )
@@ -328,39 +336,94 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
             return AppKit.NSColor.systemGreenColor()
 
         @objc.python_method
-        def _usage_cell(self, row: UsageRowViewModel, cell, parent, *, show_reset: bool) -> None:
+        def _usage_line(self, row: UsageRowViewModel, line, parent) -> None:
+            """One limit in aligned columns: name, bar, percent, time left, clock."""
+            secondary = AppKit.NSColor.secondaryLabelColor()
+            color = self._usage_color(row.state)
+            parent.addSubview_(self._label(row.label, line.label, size=10.5, color=secondary))
+            parent.addSubview_(self._fill(AppKit.NSColor.quaternaryLabelColor(), line.bar, radius=2.5))
+            percent = max(0.0, min(100.0, row.used_percent))
+            if percent > 0:
+                width = max(5.0, line.bar.width * percent / 100.0)
+                parent.addSubview_(
+                    self._fill(color, Rect(line.bar.x, line.bar.y, width, line.bar.height), radius=2.5)
+                )
             parent.addSubview_(
                 self._label(
-                    f"{row.label} {row.used_percent:.0f}%",
-                    cell.text,
-                    size=10.0,
-                    color=AppKit.NSColor.secondaryLabelColor(),
+                    f"{row.used_percent:.0f}%",
+                    line.percent,
+                    size=10.5,
+                    weight=AppKit.NSFontWeightMedium,
+                    color=color,
+                    align_right=True,
                     digits=True,
                 )
             )
-            if show_reset and row.reset_text:
+            if row.amount_text:
                 parent.addSubview_(
                     self._label(
-                        row.reset_text,
-                        cell.text,
-                        size=10.0,
+                        row.amount_text,
+                        Rect(
+                            line.time_left.x,
+                            line.time_left.y,
+                            line.clock.max_x - line.time_left.x,
+                            line.time_left.height,
+                        ),
+                        size=10.5,
+                        color=secondary,
+                        align_right=True,
+                        digits=True,
+                    )
+                )
+                return
+            parent.addSubview_(
+                self._label(
+                    usage_time_left(row),
+                    line.time_left,
+                    size=10.5,
+                    color=secondary,
+                    align_right=True,
+                    digits=True,
+                )
+            )
+            if row.reset_clock:
+                parent.addSubview_(
+                    self._label(
+                        row.reset_clock,
+                        line.clock,
+                        size=10.5,
                         color=AppKit.NSColor.tertiaryLabelColor(),
                         align_right=True,
                         digits=True,
                     )
                 )
-            track = self._fill(AppKit.NSColor.quaternaryLabelColor(), cell.bar, radius=1.5)
-            parent.addSubview_(track)
-            percent = max(0.0, min(100.0, row.used_percent))
-            if percent > 0:
-                width = max(3.0, cell.bar.width * percent / 100.0)
-                parent.addSubview_(
-                    self._fill(
-                        self._usage_color(row.state),
-                        Rect(cell.bar.x, cell.bar.y, width, cell.bar.height),
-                        radius=1.5,
+
+        @objc.python_method
+        def _account_name(self, account: PopoverAccountViewModel, frame: Rect, *, expired: bool):
+            """The email at full strength with the plan quiet beside it."""
+            field = self._label("", frame, keep_ends=True)
+            name_color = AppKit.NSColor.secondaryLabelColor() if expired else AppKit.NSColor.labelColor()
+            text = AppKit.NSMutableAttributedString.alloc().initWithString_attributes_(
+                account.alias or account.email,
+                {
+                    AppKit.NSFontAttributeName: AppKit.NSFont.systemFontOfSize_weight_(
+                        12.0, AppKit.NSFontWeightSemibold
+                    ),
+                    AppKit.NSForegroundColorAttributeName: name_color,
+                },
+            )
+            if account.plan_label:
+                text.appendAttributedString_(
+                    AppKit.NSAttributedString.alloc().initWithString_attributes_(
+                        f"  {account.plan_label}".replace(" ", "\u00a0"),
+                        {
+                            AppKit.NSFontAttributeName: AppKit.NSFont.systemFontOfSize_(10.0),
+                            AppKit.NSForegroundColorAttributeName: AppKit.NSColor.tertiaryLabelColor(),
+                        },
                     )
                 )
+            field.setAttributedStringValue_(text)
+            return field
 
         @objc.python_method
         def _account_row(self, account: PopoverAccountViewModel, layout, document) -> None:
@@ -371,42 +434,37 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
             document.addSubview_(row)
             expired = account_login_expired(account)
             if account.is_active:
-                row.resting_color = AppKit.NSColor.systemGreenColor().colorWithAlphaComponent_(0.16)
+                row.resting_color = AppKit.NSColor.labelColor().colorWithAlphaComponent_(0.08)
                 row.fill_color = row.resting_color
-            if not account.is_active:
+            else:
                 slot = account.number
                 row.on_activate = lambda: self.host.activate_slot(slot)
             row.setToolTip_(account_tooltip(account))
             row.addSubview_(self._badge(account, layout.avatar, muted=expired))
-            row.addSubview_(
-                self._label(
-                    account.alias or account.email,
-                    layout.name,
-                    size=12.0,
-                    weight=AppKit.NSFontWeightMedium,
-                    color=AppKit.NSColor.secondaryLabelColor() if expired else None,
-                    keep_ends=True,
+            row.addSubview_(self._account_name(account, layout.name, expired=expired))
+            status = account_status_text(account)
+            if status:
+                if account.is_active:
+                    status_color = AppKit.NSColor.systemGreenColor()
+                elif expired:
+                    status_color = AppKit.NSColor.systemOrangeColor()
+                elif account_at_limit(account) or status.startswith("Rejected"):
+                    status_color = AppKit.NSColor.systemRedColor()
+                else:
+                    status_color = AppKit.NSColor.secondaryLabelColor()
+                row.addSubview_(
+                    self._label(
+                        status,
+                        layout.status,
+                        size=10.5,
+                        weight=AppKit.NSFontWeightMedium,
+                        color=status_color,
+                        align_right=True,
+                    )
                 )
-            )
-            if account.is_active:
-                status_color = AppKit.NSColor.systemGreenColor()
-            elif expired:
-                status_color = AppKit.NSColor.systemOrangeColor()
-            else:
-                status_color = AppKit.NSColor.secondaryLabelColor()
-            row.addSubview_(
-                self._label(
-                    account_status_text(account),
-                    layout.status,
-                    size=10.0,
-                    color=status_color,
-                    align_right=True,
-                    digits=True,
-                )
-            )
             usage = compact_usage_rows(account)
-            for usage_row, cell in zip(usage, layout.usage_cells, strict=True):
-                self._usage_cell(usage_row, cell, row, show_reset=len(usage) <= 2)
+            for usage_row, line in zip(usage, layout.usage_lines, strict=True):
+                self._usage_line(usage_row, line, row)
             if not usage:
                 if expired:
                     detail = "Click to sign in and switch"
@@ -415,18 +473,20 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
                 else:
                     detail = account.freshness_detail
                 row.addSubview_(
-                    self._label(detail, layout.detail, size=10.0, color=AppKit.NSColor.tertiaryLabelColor())
+                    self._label(detail, layout.detail, size=10.5, color=AppKit.NSColor.tertiaryLabelColor())
                 )
             if account.session_available and not expired:
-                row.addSubview_(
-                    self._icon_button(
-                        "terminal",
-                        "New Terminal session on this account",
-                        "isolatedSession:",
-                        layout.session_button,
-                        slot=account.number,
-                    )
+                # Only on hover: a rarely used action shouldn't sit on every row.
+                session = self._icon_button(
+                    "terminal",
+                    "New Terminal session on this account",
+                    "isolatedSession:",
+                    layout.session_button,
+                    slot=account.number,
                 )
+                session.setHidden_(True)
+                row.hover_views = (session,)
+                row.addSubview_(session)
 
         @objc.python_method
         def _scroll_document(self, root, viewport: Rect, document_height: float, *, identifier: str):
@@ -459,7 +519,6 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
         def _main_layout(self, model: MenuBarPopoverViewModel):
             return plan_main_popover(
                 tuple(len(compact_usage_rows(account)) for account in model.accounts),
-                has_footer=self._can_rotate(model),
             )
 
         @objc.python_method
@@ -516,15 +575,6 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
                         color=AppKit.NSColor.secondaryLabelColor(),
                     )
                 )
-            if layout.footer is not None:
-                for title, action, frame, prominent, tip in (
-                    ("Best", "switchBest:", layout.switch_best, True, "Switch to the account with the most room"),
-                    ("Next", "nextAvailable:", layout.next_available, False, "Switch to the next account with room"),
-                    ("Rotate", "rotateNext:", layout.rotate_next, False, "Switch to the next account in order"),
-                ):
-                    button = self._button(title, action, frame, prominent=prominent)
-                    button.setToolTip_(tip)
-                    root.addSubview_(button)
             maximum_offset = max(0.0, layout.accounts_document_height - layout.accounts_viewport.height)
             scroll.contentView().scrollToPoint_(AppKit.NSMakePoint(0.0, min(scroll_offset, maximum_offset)))
             scroll.reflectScrolledClipView_(scroll.contentView())
@@ -538,7 +588,7 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
 
         @objc.python_method
         def _overflow_heights(self, model: MenuBarPopoverViewModel) -> list[float]:
-            return [BUTTON_HEIGHT for _ in model.accounts] + [BUTTON_HEIGHT] * 3
+            return [BUTTON_HEIGHT for _ in model.accounts] + [BUTTON_HEIGHT] * 4
 
         @objc.python_method
         def _overflow(self, document, model: MenuBarPopoverViewModel) -> None:
@@ -560,6 +610,21 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
                 document.addSubview_(self._button(state_title, "toggleDisabled:", state, slot=account.number))
                 document.addSubview_(self._button("Remove", "removeAccount:", remove, slot=account.number))
             controls = layout.items[len(model.accounts):]
+            can_rotate = self._can_rotate(model)
+            for (title, action, tip), frame in zip(
+                (
+                    ("Most room", "switchBest:", "Switch to the account with the most room"),
+                    ("Next with room", "nextAvailable:", "Switch to the next account with room"),
+                    ("Next in order", "rotateNext:", "Switch to the next account in order"),
+                ),
+                button_row(controls[0], 3),
+                strict=True,
+            ):
+                button = self._button(title, action, frame)
+                button.setToolTip_(tip)
+                button.setEnabled_(can_rotate)
+                document.addSubview_(button)
+            controls = controls[1:]
             pairs = (
                 (("Add current login", "addCurrent:"), ("Add setup token", "addToken:")),
                 (("Refresh login", "refreshCredentials:"), ("Switch history", "showHistory:")),

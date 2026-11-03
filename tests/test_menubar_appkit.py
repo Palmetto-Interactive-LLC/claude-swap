@@ -184,7 +184,8 @@ class NativeMenuBarAppKitSmokeTests(unittest.TestCase):
         origin = other_row.frame().origin
         label_point = AppKit.NSMakePoint(origin.x + 50.0, origin.y + 12.0)
         self.assertEqual(other_row.hitTest_(label_point), other_row)
-        session = next(view for view in other_row.subviews() if isinstance(view, AppKit.NSButton))
+        session = self._button_by_action(other_row, "isolatedSession:")
+        session.setHidden_(False)
         session_frame = session.frame()
         button_point = AppKit.NSMakePoint(
             origin.x + session_frame.origin.x + 4.0, origin.y + session_frame.origin.y + 4.0
@@ -212,19 +213,52 @@ class NativeMenuBarAppKitSmokeTests(unittest.TestCase):
         self.assertEqual(host.last_message, "Sign in as account-2@example.test in your browser")
         host.last_message = ""
 
-    def test_rotation_buttons_are_hidden_with_nothing_alive_to_move_to(self) -> None:
+    def _button_by_action(self, view, action: str):
+        import AppKit
+
+        return next(
+            child
+            for child in self._subviews(view)
+            if isinstance(child, AppKit.NSButton) and str(child.action()) == action
+        )
+
+    def test_strategy_switches_live_on_the_manage_screen_and_need_a_live_target(self) -> None:
         base = _model(2)
         dead = replace(base.accounts[1], sentinel=USAGE_RELOGIN_REQUIRED)
         model = replace(base, accounts=(base.accounts[0], dead))
         _application, host = self._host(model)
-
-        host.content.renderModel_screen_(model, "main")
-        for title in ("Best", "Next", "Rotate"):
-            self.assertNotIn(title, self._titles(host))
+        actions = ("switchBest:", "nextAvailable:", "rotateNext:")
 
         host.content.renderModel_screen_(base, "main")
-        for title in ("Best", "Next", "Rotate"):
-            self.assertIn(title, self._titles(host))
+        main_actions = {
+            str(view.action()) for view in self._subviews(host.content.view()) if hasattr(view, "action")
+        }
+        self.assertFalse(main_actions & set(actions))
+
+        host.content.renderModel_screen_(model, "overflow")
+        for action in actions:
+            self.assertFalse(self._button_by_action(host.content.view(), action).isEnabled())
+
+        host.content.renderModel_screen_(base, "overflow")
+        for action in actions:
+            self.assertTrue(self._button_by_action(host.content.view(), action).isEnabled())
+
+    def test_every_limit_gets_a_line_with_its_time_left(self) -> None:
+        import AppKit
+
+        model = _model(2, rows_per_account=1)
+        _application, host = self._host(model)
+        host.content.renderModel_screen_(model, "main")
+        _active_row, other_row = self._accounts_document(host).subviews()
+
+        texts = [
+            str(view.stringValue())
+            for view in self._subviews(other_row)
+            if isinstance(view, AppKit.NSTextField)
+        ]
+        self.assertIn("5h", texts)
+        self.assertIn("40%", texts)
+        self.assertIn("2h 0m", texts)
 
     def test_message_replaces_the_title_without_moving_the_list(self) -> None:
         import AppKit
@@ -273,9 +307,6 @@ class NativeMenuBarAppKitSmokeTests(unittest.TestCase):
                 "refreshNow:",
                 "showSettings:",
                 "showOverflow:",
-                "switchBest:",
-                "nextAvailable:",
-                "rotateNext:",
             },
         )
         self.assertTrue(all(not _intersects(accounts_scroll.frame(), button.frame()) for button in root_buttons))
@@ -285,14 +316,19 @@ class NativeMenuBarAppKitSmokeTests(unittest.TestCase):
         self.assertTrue(all(row.isFlipped() for row in rows))
         self.assertFalse(_intersects(rows[0].frame(), rows[1].frame()))
 
-    def test_active_row_has_no_session_button_and_others_do(self) -> None:
+    def test_session_button_appears_only_on_hover_and_never_on_the_active_row(self) -> None:
         model = _model(2)
         _application, host = self._host(model)
         host.content.renderModel_screen_(model, "main")
         active_row, other_row = self._accounts_document(host).subviews()
 
         self.assertEqual(self._button_titles(active_row), [])
-        self.assertEqual(self._button_titles(other_row), [""])
+        session = self._button_by_action(other_row, "isolatedSession:")
+        self.assertTrue(session.isHidden())
+        other_row.mouseEntered_(None)
+        self.assertFalse(session.isHidden())
+        other_row.mouseExited_(None)
+        self.assertTrue(session.isHidden())
 
     def test_every_secondary_screen_renders_within_the_popover_width(self) -> None:
         import AppKit

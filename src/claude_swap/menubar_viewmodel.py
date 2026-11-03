@@ -23,7 +23,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TypeAlias
 
-from claude_swap import pace
+from claude_swap import pace, subscription
 from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
 from claude_swap.models import AccountsSnapshot
 from claude_swap.switcher import SENTINEL_NOTES
@@ -123,6 +123,7 @@ class UsageRowViewModel:
     ahead_of_pace: bool = False
     limit_reached: bool = False
     amount_text: str | None = None
+    reset_clock: str | None = None
 
 
 @dataclass(frozen=True)
@@ -143,6 +144,7 @@ class PopoverAccountViewModel:
     capacity_summary: str
     rows: tuple[UsageRowViewModel, ...]
     session_available: bool
+    plan_label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -487,6 +489,17 @@ def _spend_amount_text(window: dict) -> str | None:
     return f"{prefix}{used:,.2f} / {prefix}{limit:,.2f}"
 
 
+def _reset_clock(window: dict, now: float) -> str | None:
+    """When a window resets, local time: ``19:00`` today, else ``Nov 8 10:00``."""
+    timestamp = _resets_at_ts(window)
+    if timestamp == float("inf") or timestamp <= now:
+        return None
+    moment = datetime.fromtimestamp(timestamp)
+    if moment.date() == datetime.fromtimestamp(now).date():
+        return moment.strftime("%H:%M")
+    return f"{moment.strftime('%b')} {moment.day} {moment.strftime('%H:%M')}"
+
+
 def _usage_row(
     label: str,
     scope: UsageScope,
@@ -514,6 +527,7 @@ def _usage_row(
         ahead_of_pace=bool(pace_result and pace_result.ahead) and not limit_reached,
         limit_reached=limit_reached,
         amount_text=_spend_amount_text(window) if scope is UsageScope.SPEND else None,
+        reset_clock=_reset_clock(window, now),
     )
 
 
@@ -626,6 +640,7 @@ def popover_view_model(
                 # token. A second profile can drift after token rotation, so only
                 # inactive OAuth accounts may start an isolated session.
                 session_available=account.kind == "oauth" and not account.is_active,
+                plan_label=subscription.plan_label((account.subscription_plan or {}).get("plan")),
             )
         )
     return MenuBarPopoverViewModel(tuple(accounts), snapshot.active_number)
@@ -645,24 +660,45 @@ def account_can_activate(account: PopoverAccountViewModel) -> bool:
     return not account.is_active and not account_login_expired(account)
 
 
+def account_initial(account: PopoverAccountViewModel) -> str:
+    """Badge letter: the alias's, else the email domain's.
+
+    Several addresses can share a first letter (matt@this, matt@that), but their
+    domains are what tell them apart.
+    """
+    source = account.alias or account.email.partition("@")[2] or account.email
+    return source[:1].upper()
+
+
 def account_status_text(account: PopoverAccountViewModel) -> str:
-    """The short state shown at the end of an account's first line."""
+    """The short state at the end of an account's first line, when there is one."""
     if account.is_active:
         return "Active"
     if account_login_expired(account):
         return "Signed out"
     if account.disabled:
         return "Disabled"
-    return account.capacity_summary
+    if account.capacity_summary.startswith("Rejected"):
+        return account.capacity_summary
+    if account_at_limit(account):
+        return "At limit"
+    return ""
+
+
+def account_at_limit(account: PopoverAccountViewModel) -> bool:
+    """Whether a rate-limit window, as opposed to a spend budget, is used up."""
+    return any(
+        row.scope is not UsageScope.SPEND and row.used_percent >= 100 for row in account.rows
+    )
 
 
 def compact_usage_rows(
-    account: PopoverAccountViewModel, limit: int = 3
+    account: PopoverAccountViewModel, limit: int = 5
 ) -> tuple[UsageRowViewModel, ...]:
-    """The meters worth a row's space: 5h, 7d, then the tightest model limits.
+    """The limits to list: 5h, 7d, model limits tightest first, then spend.
 
-    Spend is a budget rather than a rate limit, and an expired login's last-known
-    windows say nothing about what it can do now. Both stay in the tooltip.
+    An expired login's last-known windows say nothing about what it can do now,
+    so it lists none.
     """
     if account_login_expired(account):
         return ()
@@ -672,12 +708,23 @@ def compact_usage_rows(
         key=lambda row: row.used_percent,
         reverse=True,
     )
-    return tuple((windows + scoped)[:limit])
+    spend = [row for row in account.rows if row.scope is UsageScope.SPEND]
+    return tuple((windows + scoped + spend)[:limit])
+
+
+def usage_time_left(row: UsageRowViewModel) -> str:
+    """The time-left column, never blank: a window with no reset time says why."""
+    if row.reset_text:
+        return row.reset_text
+    return "not started" if row.used_percent <= 0 else "reset due"
 
 
 def account_tooltip(account: PopoverAccountViewModel) -> str:
     """Everything the compact row leaves out, one fact per line."""
-    lines = [account.email, account.freshness_detail]
+    lines = [account.email]
+    if account.plan_label:
+        lines.append(account.plan_label)
+    lines.append(account.freshness_detail)
     if account.sentinel_note:
         lines.append(account.sentinel_note)
     for row in account.rows:
@@ -685,6 +732,8 @@ def account_tooltip(account: PopoverAccountViewModel) -> str:
         line = f"{row.label}: {value}"
         if row.reset_text:
             line += f", resets in {row.reset_text}"
+            if row.reset_clock:
+                line += f" ({row.reset_clock})"
         if row.ahead_of_pace:
             line += ", ahead of pace"
         lines.append(line)
@@ -732,6 +781,9 @@ def _adapt_snapshot(snap) -> dict:
 
 
 __all__ = [
+    "account_at_limit",
+    "account_initial",
+    "usage_time_left",
     "account_can_activate",
     "account_login_expired",
     "account_status_text",
