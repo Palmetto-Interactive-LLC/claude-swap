@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TypeAlias
 
 from claude_swap import pace
+from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
 from claude_swap.models import AccountsSnapshot
 from claude_swap.switcher import SENTINEL_NOTES
 from claude_swap.usage_store import SERVE_TTL_S, STALE_OK_S, UsageEntry
@@ -561,6 +562,7 @@ def _capacity_summary(
     rows: tuple[UsageRowViewModel, ...],
     rejected: object = None,
     now: float | None = None,
+    sentinel: str | None = None,
 ) -> str:
     """The tightest quota headroom for a compact account header.
 
@@ -569,6 +571,9 @@ def _capacity_summary(
     leads instead: the account is at its limit until the refusal ends, however
     low its windows read.
     """
+    if sentinel == USAGE_RELOGIN_REQUIRED:
+        # A dead token's last-known windows say nothing about what it can do now.
+        return "login expired"
     if isinstance(rejected, dict):
         countdown = _live_countdown(rejected, time.time() if now is None else now)
         return f"rejected (!) ({countdown})" if countdown else "rejected (!)"
@@ -576,7 +581,7 @@ def _capacity_summary(
     if not quota_rows:
         return "Capacity unavailable"
     available = min(row.available_percent for row in quota_rows)
-    return f"{available:.0f}% minimum capacity"
+    return f"{available:.0f}% left"
 
 
 def popover_view_model(
@@ -614,6 +619,7 @@ def popover_view_model(
                     rows,
                     (account.usage.last_good or {}).get("rejected"),
                     now,
+                    sentinel,
                 ),
                 rows=rows,
                 # The active default profile already owns this account's refresh

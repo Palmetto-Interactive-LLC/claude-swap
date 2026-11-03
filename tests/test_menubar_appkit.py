@@ -43,7 +43,7 @@ def _model(account_count: int, rows_per_account: int = 2) -> MenuBarPopoverViewM
             sentinel=None,
             sentinel_note=None,
             has_last_good=True,
-            capacity_summary="60% minimum capacity",
+            capacity_summary="60% left",
             rows=(row,) * rows_per_account,
             session_available=index != 0,
         )

@@ -78,7 +78,7 @@ def test_popover_model_preserves_usage_semantics_without_fetching() -> None:
     assert model.active_number == "1"
     assert account.display_name == "work"
     assert account.disabled and account.freshness is viewmodel.FreshnessState.FRESH
-    assert account.capacity_summary == "0% minimum capacity"
+    assert account.capacity_summary == "0% left"
     assert [row.label for row in account.rows] == ["Spend", "5h", "7d", "Fable", "Opus"]
     assert rows["Spend"].amount_text == "$12.50 / $50.00"
     assert rows["Spend"].reset_text == "2h 0m"
@@ -177,7 +177,7 @@ def test_capacity_ignores_spend_and_freshness_does_not_overstate_age() -> None:
 
     assert account.freshness is viewmodel.FreshnessState.FRESH
     assert account.freshness_detail == "Updated 3m ago"
-    assert account.capacity_summary == "90% minimum capacity"
+    assert account.capacity_summary == "90% left"
 
 
 def test_capacity_summary_leads_with_a_rejected_probe_over_low_windows():
@@ -194,4 +194,17 @@ def test_capacity_summary_leads_with_a_rejected_probe_over_low_windows():
         "rejected (!) (1h 0m)"
     )
     assert viewmodel._capacity_summary((row,), {}, _NOW) == "rejected (!)"
-    assert viewmodel._capacity_summary((row,), None, _NOW) == "97% minimum capacity"
+    assert viewmodel._capacity_summary((row,), None, _NOW) == "97% left"
+
+
+def test_capacity_summary_does_not_report_room_on_an_expired_login():
+    row = viewmodel._usage_row(
+        "5h", viewmodel.UsageScope.FIVE_HOUR, {"pct": 0.0}, _NOW, None
+    )
+
+    assert (
+        viewmodel._capacity_summary(
+            (row,), None, _NOW, sentinel=viewmodel.USAGE_RELOGIN_REQUIRED
+        )
+        == "login expired"
+    )
