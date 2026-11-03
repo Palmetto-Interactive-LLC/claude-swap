@@ -426,7 +426,9 @@ swapped account.
 
 ## Uninstall
 
-Remove all data:
+To remove the macOS menu bar app and `cswap` and keep your accounts, add `--uninstall` to the [install command](#macos-with-the-menu-bar-app).
+
+To remove everything by hand, start with all data:
 
 ```bash
 cswap purge

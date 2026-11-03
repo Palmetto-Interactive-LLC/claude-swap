@@ -129,6 +129,8 @@ def test_no_service_leaves_launchd_alone(stubs: _Stubs) -> None:
 
     assert result.returncode == 0, result.stderr
     assert not any("--install-service" in line for line in stubs.logged)
+    assert "Look for the icon" not in result.stdout
+    assert 'Run "cswap menubar"' in result.stdout
 
 
 def test_refuses_anything_but_macos(stubs: _Stubs) -> None:

@@ -168,9 +168,13 @@ if [ "$start_service" = true ]; then
     esac
 fi
 
-cat <<EOF
+if [ "$start_service" = true ]; then
+    printf '\nAll set. Look for the icon in your menu bar: a solid dot in front of a ring.\n'
+else
+    printf '\nInstalled. Run "cswap menubar" to start the app.\n'
+fi
 
-All set. Look for the icon in your menu bar: a solid dot in front of a ring.
+cat <<EOF
 
 Next:
   1. Add the account you're logged in to now:  cswap add
