@@ -150,6 +150,14 @@ class NativeMenuBarAppKitSmokeTests(unittest.TestCase):
         self.assertFalse(by_title["Re-login needed"].isEnabled())
         # An isolated session is the way to log back in, so it stays available.
         self.assertTrue(by_title["Session"].isEnabled())
+        # Nothing alive to move to, so the rotation buttons are off too.
+        for title in ("Rotate next", "Switch best", "Next available"):
+            self.assertFalse(by_title[title].isEnabled())
+
+        host.content.renderModel_screen_(base, "main")
+        by_title = {str(button.title()): button for button in buttons(host.content.view())}
+        for title in ("Rotate next", "Switch best", "Next available"):
+            self.assertTrue(by_title[title].isEnabled())
 
     def test_native_popover_constructs_fixed_chrome_and_flipped_accounts_document(self) -> None:
         """The main screen keeps only account groups inside its scroll view."""

@@ -281,9 +281,20 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
                     )
                 )
             root.addSubview_(self._separator(Rect(0.0, layout.footer.y, POPOVER_WIDTH, 1.0)))
-            root.addSubview_(self._button("Rotate next", "rotateNext:", layout.rotate_next))
-            root.addSubview_(self._button("Switch best", "switchBest:", layout.switch_best))
-            root.addSubview_(self._button("Next available", "nextAvailable:", layout.next_available))
+            # Rotation only checks that a slot has stored credentials, so with
+            # nothing alive to move to it could land on a dead refresh token.
+            can_rotate = any(
+                not account.is_active and account.sentinel != USAGE_RELOGIN_REQUIRED
+                for account in model.accounts
+            )
+            for title, action, frame in (
+                ("Rotate next", "rotateNext:", layout.rotate_next),
+                ("Switch best", "switchBest:", layout.switch_best),
+                ("Next available", "nextAvailable:", layout.next_available),
+            ):
+                button = self._button(title, action, frame)
+                button.setEnabled_(can_rotate)
+                root.addSubview_(button)
             root.addSubview_(self._button("Refresh", "refreshNow:", layout.refresh))
             root.addSubview_(self._button("More…", "showOverflow:", layout.more))
             root.addSubview_(self._button("Settings", "showSettings:", layout.settings))
