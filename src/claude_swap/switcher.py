@@ -3241,6 +3241,27 @@ class ClaudeAccountSwitcher:
         )
         return True
 
+    def _adopt_relogin_over_dead_token(
+        self, account_num: str, email: str, org_uuid: str
+    ) -> bool:
+        """Whether a fresh login in this dead slot's session profile was adopted.
+
+        Runs on every collect pass for a quarantined slot, so it stays quiet: a
+        slot with no profile takes no lock, and any failure just leaves the slot
+        quarantined until the next pass.
+        """
+        if not self._session_dir(account_num, email).is_dir():
+            return False
+        try:
+            return self._adopt_session_credential(account_num, email, org_uuid) is True
+        except LockError:
+            return False
+        except Exception as e:
+            self._logger.warning(
+                f"Could not adopt the session login for account {account_num}: {e}"
+            )
+            return False
+
     def _delete_session_profile(self, account_num: str, email: str) -> None:
         """Remove an account's session profile dir and its keychain entry.
 
@@ -5411,6 +5432,19 @@ class ClaudeAccountSwitcher:
                 continue
             entry = entries[num]
             _i = info_by_num[num]
+            # The quarantine below stops the fetch that normally adopts an
+            # exited session's credential, so a /login inside a session profile
+            # would never reach a dead slot. Adopt it here instead.
+            if (
+                entry.token_dead()
+                and not _i[4]
+                and self._adopt_relogin_over_dead_token(num, _i[1], _i[3])
+            ):
+                store.clear_dead_token([num], {num: identities[num]})
+                fresh = self.read_account_credentials(num, _i[1])
+                info_by_num[num] = (*_i[:5], fresh, _i[6])
+                entries = store.entries(identities, models)
+                continue
             if self._entry_token_dead(entry, num, _i[1], _i[5], _i[4]):
                 sentinels[num] = USAGE_RELOGIN_REQUIRED
             elif entry.auth_dead_strikes and entry.token_dead():

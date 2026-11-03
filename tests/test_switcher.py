@@ -4697,6 +4697,69 @@ class TestDeadTokenQuarantine:
         assert entries["2"].sentinel == USAGE_RELOGIN_REQUIRED
         fetch.assert_not_called()  # quarantined: no endless 401/429 loop
 
+    def _dead_slot_with_profile(self, profile_creds, *, email="test@example.com"):
+        switcher = ClaudeAccountSwitcher()
+        switcher._setup_directories()
+        switcher._write_account_credentials("2", "test@example.com", self._dead_creds())
+        self._make_dead(switcher)
+        session_dir = switcher._session_dir("2", "test@example.com")
+        session_dir.mkdir(parents=True, exist_ok=True)
+        (session_dir / ".credentials.json").write_text(profile_creds)
+        (session_dir / ".claude.json").write_text(json.dumps({
+            "oauthAccount": {"emailAddress": email, "organizationUuid": ""}
+        }))
+        return switcher, session_dir
+
+    def _collect_dead_slot(self, switcher):
+        info = [(2, "test@example.com", "Org", "", False, self._dead_creds(), "")]
+        with patch.object(switcher, "_run_usage_fetches", return_value={}):
+            return switcher._collect_usage_entries(info)["2"]
+
+    def test_a_login_in_the_session_profile_lifts_the_quarantine(self, temp_home):
+        login = _oauth_creds("sk-new-login", 7200)
+        switcher, _session_dir = self._dead_slot_with_profile(login)
+
+        entry = self._collect_dead_slot(switcher)
+
+        assert entry.sentinel is None
+        assert entry.auth_dead_strikes == 0
+        assert switcher.read_account_credentials("2", "test@example.com") == login
+
+    def test_a_profile_still_on_the_dead_generation_stays_quarantined(self, temp_home):
+        from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
+        switcher, _session_dir = self._dead_slot_with_profile(self._dead_creds())
+
+        assert self._collect_dead_slot(switcher).sentinel == USAGE_RELOGIN_REQUIRED
+        assert (
+            switcher.read_account_credentials("2", "test@example.com")
+            == self._dead_creds()
+        )
+
+    def test_a_login_to_another_account_is_not_adopted(self, temp_home):
+        from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
+        switcher, _session_dir = self._dead_slot_with_profile(
+            _oauth_creds("sk-other", 7200), email="other@example.com"
+        )
+
+        assert self._collect_dead_slot(switcher).sentinel == USAGE_RELOGIN_REQUIRED
+        assert (
+            switcher.read_account_credentials("2", "test@example.com")
+            == self._dead_creds()
+        )
+
+    def test_a_session_still_running_is_not_adopted_yet(self, temp_home):
+        from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
+        switcher, session_dir = self._dead_slot_with_profile(_oauth_creds("sk-live", 7200))
+        records = session_dir / "sessions"
+        records.mkdir()
+        (records / f"{os.getpid()}.json").write_text(json.dumps({"pid": os.getpid()}))
+
+        assert self._collect_dead_slot(switcher).sentinel == USAGE_RELOGIN_REQUIRED
+        assert (
+            switcher.read_account_credentials("2", "test@example.com")
+            == self._dead_creds()
+        )
+
     def test_relogin_surfaces_same_pass_on_invalid_grant(self, temp_home):
         # A fetch that returns invalid_grant crosses the dead threshold this pass;
         # the pre-fetch quarantine scan couldn't see it, so the collector must

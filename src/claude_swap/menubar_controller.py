@@ -377,7 +377,7 @@ class MenuBarController:
             return
         if isinstance(result, TerminalLaunchResult):
             if result.launched:
-                self._notify("Isolated session launched", f"Terminal is running cswap run {result.slot}.")
+                self._notify("Session opened in Terminal", "If it's logged out, run /login there, then quit.")
             else:
                 self._notify("Couldn't launch isolated session", result.error_message or "Terminal launch failed.")
             return
