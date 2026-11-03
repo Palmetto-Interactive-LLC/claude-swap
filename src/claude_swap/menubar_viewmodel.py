@@ -573,10 +573,10 @@ def _capacity_summary(
     """
     if sentinel == USAGE_RELOGIN_REQUIRED:
         # A dead token's last-known windows say nothing about what it can do now.
-        return "login expired"
+        return "Login expired"
     if isinstance(rejected, dict):
         countdown = _live_countdown(rejected, time.time() if now is None else now)
-        return f"rejected (!) ({countdown})" if countdown else "rejected (!)"
+        return f"Rejected {countdown}" if countdown else "Rejected"
     quota_rows = tuple(row for row in rows if row.scope is not UsageScope.SPEND)
     if not quota_rows:
         return "Capacity unavailable"
@@ -631,6 +631,66 @@ def popover_view_model(
     return MenuBarPopoverViewModel(tuple(accounts), snapshot.active_number)
 
 
+def account_login_expired(account: PopoverAccountViewModel) -> bool:
+    """Whether this account's refresh token is dead and needs a fresh login."""
+    return account.sentinel == USAGE_RELOGIN_REQUIRED
+
+
+def account_can_activate(account: PopoverAccountViewModel) -> bool:
+    """Whether one click may make this the live login.
+
+    Switching has no confirmation, so nothing else stands between a stray click
+    and replacing a working login with a dead refresh token.
+    """
+    return not account.is_active and not account_login_expired(account)
+
+
+def account_status_text(account: PopoverAccountViewModel) -> str:
+    """The short state shown at the end of an account's first line."""
+    if account.is_active:
+        return "Active"
+    if account_login_expired(account):
+        return "Login expired"
+    if account.disabled:
+        return "Disabled"
+    return account.capacity_summary
+
+
+def compact_usage_rows(
+    account: PopoverAccountViewModel, limit: int = 3
+) -> tuple[UsageRowViewModel, ...]:
+    """The meters worth a row's space: 5h, 7d, then the tightest model limits.
+
+    Spend is a budget rather than a rate limit, and an expired login's last-known
+    windows say nothing about what it can do now. Both stay in the tooltip.
+    """
+    if account_login_expired(account):
+        return ()
+    windows = [row for row in account.rows if row.scope in (UsageScope.FIVE_HOUR, UsageScope.SEVEN_DAY)]
+    scoped = sorted(
+        (row for row in account.rows if row.scope is UsageScope.SCOPED),
+        key=lambda row: row.used_percent,
+        reverse=True,
+    )
+    return tuple((windows + scoped)[:limit])
+
+
+def account_tooltip(account: PopoverAccountViewModel) -> str:
+    """Everything the compact row leaves out, one fact per line."""
+    lines = [account.email, account.freshness_detail]
+    if account.sentinel_note:
+        lines.append(account.sentinel_note)
+    for row in account.rows:
+        value = row.amount_text or f"{row.used_percent:.0f}%"
+        line = f"{row.label}: {value}"
+        if row.reset_text:
+            line += f", resets in {row.reset_text}"
+        if row.ahead_of_pace:
+            line += ", ahead of pace"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 EMPTY_SNAPSHOT: dict[str, object] = {
     "accounts": [],
     "active_email": None,
@@ -672,6 +732,11 @@ def _adapt_snapshot(snap) -> dict:
 
 
 __all__ = [
+    "account_can_activate",
+    "account_login_expired",
+    "account_status_text",
+    "account_tooltip",
+    "compact_usage_rows",
     "AUTO_THRESHOLD_CHOICES",
     "CapacityState",
     "DisplayUsage",

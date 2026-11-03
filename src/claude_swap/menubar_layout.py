@@ -10,14 +10,31 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
-POPOVER_WIDTH = 430.0
-POPOVER_MAX_HEIGHT = 620.0
-HEADER_HEIGHT = 62.0
-FOOTER_HEIGHT = 80.0
+POPOVER_WIDTH = 296.0
+POPOVER_MAX_HEIGHT = 360.0
+HEADER_HEIGHT = 36.0
+FOOTER_HEIGHT = 38.0
 EMPTY_ACCOUNTS_DOCUMENT_HEIGHT = 48.0
-INSET = 14.0
-GROUP_GAP = 8.0
-BUTTON_HEIGHT = 26.0
+INSET = 12.0
+ROW_INSET = 6.0
+ROW_HEIGHT = 44.0
+ROW_GAP = 2.0
+LIST_PADDING = 2.0
+BUTTON_HEIGHT = 22.0
+ICON_BUTTON_SIZE = 22.0
+AVATAR_SIZE = 24.0
+LOGIN_BUTTON_WIDTH = 50.0
+SESSION_BUTTON_WIDTH = 20.0
+MAX_USAGE_CELLS = 3
+
+_ROW_WIDTH = POPOVER_WIDTH - 2 * ROW_INSET
+_ROW_PADDING = 8.0
+_TEXT_X = _ROW_PADDING + AVATAR_SIZE + 8.0
+_STATUS_WIDTH = 72.0
+_CELL_GAP = 6.0
+_DETAIL_Y = 21.0
+_BAR_Y = 34.0
+_BAR_HEIGHT = 3.0
 
 
 @dataclass(frozen=True)
@@ -50,17 +67,25 @@ class Rect:
 
 
 @dataclass(frozen=True)
-class AccountGroupLayout:
-    """Frames for one compact account group in the accounts document."""
+class UsageCellLayout:
+    """One usage meter: a text line above a thin bar, in row coordinates."""
+
+    text: Rect
+    bar: Rect
+
+
+@dataclass(frozen=True)
+class AccountRowLayout:
+    """Frames for one account row. Children use the row's own coordinates."""
 
     frame: Rect
-    title: Rect
-    capacity: Rect
-    email: Rect
-    freshness: Rect
-    usage_rows: tuple[Rect, ...]
-    make_active: Rect
-    session: Rect
+    avatar: Rect
+    name: Rect
+    status: Rect
+    detail: Rect
+    session_button: Rect
+    login_button: Rect
+    usage_cells: tuple[UsageCellLayout, ...]
 
 
 @dataclass(frozen=True)
@@ -70,15 +95,16 @@ class MainPopoverLayout:
     root: Rect
     header: Rect
     title: Rect
-    accounts_viewport: Rect
-    footer: Rect
-    rotate_next: Rect
-    switch_best: Rect
-    next_available: Rect
     refresh: Rect
-    more: Rect
     settings: Rect
-    accounts: tuple[AccountGroupLayout, ...]
+    more: Rect
+    message: Rect
+    accounts_viewport: Rect
+    footer: Rect | None
+    rotate_next: Rect | None
+    switch_best: Rect | None
+    next_available: Rect | None
+    accounts: tuple[AccountRowLayout, ...]
     accounts_document_height: float
 
 
@@ -87,118 +113,162 @@ class ScrollScreenLayout:
     """Top-down scroll document geometry for secondary screens."""
 
     viewport: Rect
+    back: Rect
     title: Rect
-    subtitle: Rect
     items: tuple[Rect, ...]
     document_height: float
 
 
-def _button_row(y: float, count: int, width: float) -> tuple[Rect, ...]:
-    gap = 8.0
-    button_width = (width - 2 * INSET - gap * (count - 1)) / count
+def button_row(frame: Rect, count: int, gap: float = 6.0) -> tuple[Rect, ...]:
+    """Divide ``frame`` into ``count`` equal buttons on one line."""
+    width = (frame.width - gap * (count - 1)) / count
     return tuple(
-        Rect(INSET + index * (button_width + gap), y, button_width, BUTTON_HEIGHT)
+        Rect(frame.x + index * (width + gap), frame.y, width, BUTTON_HEIGHT)
         for index in range(count)
     )
 
 
-def plan_main_popover(account_row_counts: Sequence[int]) -> MainPopoverLayout:
-    """Plan the fixed main popover and its account-only scroll document.
-
-    ``account_row_counts`` contains the already-shaped usage-row count for each
-    account. Negative counts are rejected at this boundary rather than producing
-    malformed AppKit frames.
-    """
-    if any(count < 0 for count in account_row_counts):
-        raise ValueError("account row counts cannot be negative")
-
-    title = Rect(INSET, 13.0, 300.0, 20.0)
-
-    groups: list[AccountGroupLayout] = []
-    y = INSET
-    group_width = POPOVER_WIDTH - 2 * INSET
-    for row_count in account_row_counts:
-        usage_start = 64.0
-        actions_y = usage_start + row_count * 20.0 + 4.0
-        height = actions_y + BUTTON_HEIGHT + 10.0
-        frame = Rect(INSET, y, group_width, height)
-        content_x = frame.x + 10.0
-        title_frame = Rect(content_x, frame.y + 9.0, 220.0, 18.0)
-        capacity = Rect(frame.x + 252.0, frame.y + 9.0, 140.0, 18.0)
-        email = Rect(content_x, frame.y + 28.0, 250.0, 18.0)
-        freshness = Rect(content_x, frame.y + 46.0, group_width - 20.0, 18.0)
-        usage_rows = tuple(
-            Rect(content_x, frame.y + usage_start + index * 20.0, group_width - 20.0, 18.0)
-            for index in range(row_count)
-        )
-        make_active, session = _button_row(frame.y + actions_y, 2, POPOVER_WIDTH)
-        groups.append(
-            AccountGroupLayout(
-                frame=frame,
-                title=title_frame,
-                capacity=capacity,
-                email=email,
-                freshness=freshness,
-                usage_rows=usage_rows,
-                make_active=make_active,
-                session=session,
+def _usage_cells(count: int) -> tuple[UsageCellLayout, ...]:
+    if count == 0:
+        return ()
+    available = (
+        _ROW_WIDTH - _TEXT_X - _ROW_PADDING - SESSION_BUTTON_WIDTH - _CELL_GAP
+    )
+    width = (available - _CELL_GAP * (count - 1)) / count
+    cells: list[UsageCellLayout] = []
+    for index in range(count):
+        x = _TEXT_X + index * (width + _CELL_GAP)
+        cells.append(
+            UsageCellLayout(
+                text=Rect(x, _DETAIL_Y, width, 12.0),
+                bar=Rect(x, _BAR_Y, width, _BAR_HEIGHT),
             )
         )
-        y = frame.max_y + GROUP_GAP
+    return tuple(cells)
 
-    document_height = max(EMPTY_ACCOUNTS_DOCUMENT_HEIGHT, y - GROUP_GAP + INSET)
-    maximum_viewport_height = POPOVER_MAX_HEIGHT - HEADER_HEIGHT - FOOTER_HEIGHT
-    viewport_height = min(document_height, maximum_viewport_height)
-    root = Rect(0.0, 0.0, POPOVER_WIDTH, HEADER_HEIGHT + viewport_height + FOOTER_HEIGHT)
+
+def plan_main_popover(
+    usage_cell_counts: Sequence[int],
+    *,
+    has_footer: bool = True,
+) -> MainPopoverLayout:
+    """Plan the fixed main popover and its account-only scroll document.
+
+    ``usage_cell_counts`` holds each account's meter count, at most
+    ``MAX_USAGE_CELLS``. Counts outside that range are rejected at this boundary
+    rather than producing malformed AppKit frames.
+    """
+    if any(count < 0 or count > MAX_USAGE_CELLS for count in usage_cell_counts):
+        raise ValueError(f"usage cell counts must be 0-{MAX_USAGE_CELLS}")
+
+    rows: list[AccountRowLayout] = []
+    y = LIST_PADDING
+    for count in usage_cell_counts:
+        status_x = _ROW_WIDTH - _ROW_PADDING - _STATUS_WIDTH
+        action_right = _ROW_WIDTH - _ROW_PADDING
+        rows.append(
+            AccountRowLayout(
+                frame=Rect(ROW_INSET, y, _ROW_WIDTH, ROW_HEIGHT),
+                avatar=Rect(_ROW_PADDING, 10.0, AVATAR_SIZE, AVATAR_SIZE),
+                name=Rect(_TEXT_X, 4.0, status_x - _TEXT_X - 4.0, 16.0),
+                status=Rect(status_x, 5.0, _STATUS_WIDTH, 14.0),
+                detail=Rect(
+                    _TEXT_X,
+                    _DETAIL_Y + 2.0,
+                    action_right - LOGIN_BUTTON_WIDTH - 6.0 - _TEXT_X,
+                    14.0,
+                ),
+                session_button=Rect(
+                    action_right - SESSION_BUTTON_WIDTH,
+                    21.0,
+                    SESSION_BUTTON_WIDTH,
+                    18.0,
+                ),
+                login_button=Rect(
+                    action_right - LOGIN_BUTTON_WIDTH,
+                    21.0,
+                    LOGIN_BUTTON_WIDTH,
+                    18.0,
+                ),
+                usage_cells=_usage_cells(count),
+            )
+        )
+        y += ROW_HEIGHT + ROW_GAP
+
+    document_height = (
+        max(EMPTY_ACCOUNTS_DOCUMENT_HEIGHT, y - ROW_GAP + LIST_PADDING)
+        if rows
+        else EMPTY_ACCOUNTS_DOCUMENT_HEIGHT
+    )
+    footer_height = FOOTER_HEIGHT if has_footer else 0.0
+    chrome = HEADER_HEIGHT + footer_height
+    viewport_height = min(document_height, POPOVER_MAX_HEIGHT - chrome)
     header = Rect(0.0, 0.0, POPOVER_WIDTH, HEADER_HEIGHT)
-    accounts_viewport = Rect(0.0, header.max_y, POPOVER_WIDTH, viewport_height)
-    footer = Rect(0.0, accounts_viewport.max_y, POPOVER_WIDTH, FOOTER_HEIGHT)
-    rotate_next, switch_best, next_available = _button_row(footer.y + 10.0, 3, POPOVER_WIDTH)
-    refresh, more, settings = _button_row(footer.y + 42.0, 3, POPOVER_WIDTH)
+    icon_y = (HEADER_HEIGHT - ICON_BUTTON_SIZE) / 2
+    more = Rect(POPOVER_WIDTH - 8.0 - ICON_BUTTON_SIZE, icon_y, ICON_BUTTON_SIZE, ICON_BUTTON_SIZE)
+    settings = Rect(more.x - ICON_BUTTON_SIZE, icon_y, ICON_BUTTON_SIZE, ICON_BUTTON_SIZE)
+    refresh = Rect(settings.x - ICON_BUTTON_SIZE, icon_y, ICON_BUTTON_SIZE, ICON_BUTTON_SIZE)
+    title = Rect(INSET + 2.0, 10.0, refresh.x - INSET - 6.0, 16.0)
+    # Feedback replaces the title, so the list never jumps when a switch reports.
+    message = Rect(title.x, 4.0, title.width, 28.0)
+    viewport = Rect(0.0, HEADER_HEIGHT, POPOVER_WIDTH, viewport_height)
+    footer = None
+    rotate_next = switch_best = next_available = None
+    if has_footer:
+        footer = Rect(0.0, viewport.max_y, POPOVER_WIDTH, FOOTER_HEIGHT)
+        switch_best, next_available, rotate_next = button_row(
+            Rect(INSET, footer.y + 8.0, POPOVER_WIDTH - 2 * INSET, BUTTON_HEIGHT), 3
+        )
+    root_height = viewport.max_y + footer_height
     return MainPopoverLayout(
-        root=root,
+        root=Rect(0.0, 0.0, POPOVER_WIDTH, root_height),
         header=header,
         title=title,
-        accounts_viewport=accounts_viewport,
+        refresh=refresh,
+        settings=settings,
+        more=more,
+        message=message,
+        accounts_viewport=viewport,
         footer=footer,
         rotate_next=rotate_next,
         switch_best=switch_best,
         next_available=next_available,
-        refresh=refresh,
-        more=more,
-        settings=settings,
-        accounts=tuple(groups),
+        accounts=tuple(rows),
         accounts_document_height=document_height,
     )
 
 
 def plan_scroll_screen(item_heights: Sequence[float]) -> ScrollScreenLayout:
-    """Plan a full-height secondary scroll document from ordered item heights."""
+    """Plan a secondary scroll document from ordered item heights."""
     if any(height <= 0 for height in item_heights):
         raise ValueError("scroll screen item heights must be positive")
 
-    viewport = Rect(0.0, 0.0, POPOVER_WIDTH, POPOVER_MAX_HEIGHT)
-    title = Rect(INSET, 14.0, POPOVER_WIDTH - 2 * INSET, 20.0)
-    subtitle = Rect(INSET, 34.0, POPOVER_WIDTH - 2 * INSET, 18.0)
-    y = 66.0
+    y = HEADER_HEIGHT
     items: list[Rect] = []
     for height in item_heights:
         items.append(Rect(INSET, y, POPOVER_WIDTH - 2 * INSET, height))
-        y += height + GROUP_GAP
-    document_height = max(POPOVER_MAX_HEIGHT, y - GROUP_GAP + INSET)
-    return ScrollScreenLayout(viewport, title, subtitle, tuple(items), document_height)
+        y += height + 6.0
+    document_height = max(HEADER_HEIGHT + INSET, y - 6.0 + INSET)
+    viewport = Rect(0.0, 0.0, POPOVER_WIDTH, min(document_height, POPOVER_MAX_HEIGHT))
+    back = Rect(8.0, (HEADER_HEIGHT - ICON_BUTTON_SIZE) / 2, ICON_BUTTON_SIZE, ICON_BUTTON_SIZE)
+    title = Rect(back.max_x + 4.0, 10.0, POPOVER_WIDTH - back.max_x - 4.0 - INSET, 16.0)
+    return ScrollScreenLayout(viewport, back, title, tuple(items), document_height)
 
 
 __all__ = [
-    "AccountGroupLayout",
+    "AVATAR_SIZE",
+    "AccountRowLayout",
     "BUTTON_HEIGHT",
-    "GROUP_GAP",
     "INSET",
+    "MAX_USAGE_CELLS",
     "MainPopoverLayout",
     "POPOVER_MAX_HEIGHT",
     "POPOVER_WIDTH",
+    "ROW_HEIGHT",
     "Rect",
     "ScrollScreenLayout",
+    "UsageCellLayout",
+    "button_row",
     "plan_main_popover",
     "plan_scroll_screen",
 ]

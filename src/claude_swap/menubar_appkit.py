@@ -1,4 +1,4 @@
-"""Native AppKit status item and compact account-capacity popover.
+"""Native AppKit status item and compact account-switching popover.
 
 This module deliberately imports PyObjC lazily.  Importing ``claude_swap`` on
 Linux, Windows, or a macOS Python without the menu-bar extra remains safe; only
@@ -11,12 +11,12 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from claude_swap.exceptions import ClaudeSwitchError
-from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
 from claude_swap.menubar_layout import (
     BUTTON_HEIGHT,
     POPOVER_MAX_HEIGHT,
     POPOVER_WIDTH,
     Rect,
+    button_row,
     plan_main_popover,
     plan_scroll_screen,
 )
@@ -30,6 +30,11 @@ from claude_swap.menubar_viewmodel import (
     MenuBarPopoverViewModel,
     PopoverAccountViewModel,
     UsageRowViewModel,
+    account_can_activate,
+    account_login_expired,
+    account_status_text,
+    account_tooltip,
+    compact_usage_rows,
 )
 
 if TYPE_CHECKING:
@@ -49,6 +54,19 @@ else:
 
 _native_host: tuple[object, object] | None = None
 
+# Slot number picks the badge color, so an account keeps its color and six
+# accounts that all start with "m" still read apart at a glance.
+_BADGE_COLORS = (
+    "systemIndigoColor",
+    "systemTealColor",
+    "systemPinkColor",
+    "systemOrangeColor",
+    "systemPurpleColor",
+    "systemBlueColor",
+    "systemMintColor",
+    "systemBrownColor",
+)
+
 
 def require_appkit() -> None:
     """Raise the CLI-facing error when the optional native runtime is absent."""
@@ -59,10 +77,35 @@ def require_appkit() -> None:
         )
 
 
-def _bar(percent: float) -> str:
-    """Render a dense text meter for the intentionally TUI-like popover."""
-    filled = min(12, max(0, round(percent * 12 / 100)))
-    return "█" * filled + "░" * (12 - filled)
+def _draw_status_icon() -> bool:
+    """Draw the glyph: the active account's badge in front of the next one's ring."""
+    oval = AppKit.NSBezierPath.bezierPathWithOvalInRect_
+    ring = oval(AppKit.NSMakeRect(8.2, 6.6, 8.8, 8.8))
+    ring.setLineWidth_(1.8)
+    AppKit.NSColor.blackColor().setStroke()
+    ring.stroke()
+    context = AppKit.NSGraphicsContext.currentContext()
+    context.setCompositingOperation_(AppKit.NSCompositingOperationClear)
+    oval(AppKit.NSMakeRect(0.0, 0.6, 12.8, 12.8)).fill()
+    context.setCompositingOperation_(AppKit.NSCompositingOperationSourceOver)
+    AppKit.NSColor.blackColor().setFill()
+    oval(AppKit.NSMakeRect(1.2, 1.8, 10.4, 10.4)).fill()
+    return True
+
+
+def _status_icon():
+    """Template image, so macOS tints it for light, dark, and selected states."""
+    image = AppKit.NSImage.imageWithSize_flipped_drawingHandler_(
+        AppKit.NSMakeSize(18.0, 18.0), False, lambda _rect: _draw_status_icon()
+    )
+    image.setTemplate_(True)
+    image.setAccessibilityDescription_("Claude accounts")
+    return image
+
+
+def _title_text(title: str) -> str:
+    """The status text beside the icon, without the plain-text fallback glyph."""
+    return title.removeprefix(ICON).strip()
 
 
 def _create_native_menubar(switcher: ClaudeAccountSwitcher):
@@ -78,6 +121,78 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
 
         def isFlipped(self) -> bool:
             return True
+
+    class FilledView(FlippedView):
+        """A rounded fill. Dynamic colors follow light and dark mode as it draws."""
+
+        def drawRect_(self, _rect) -> None:
+            color = getattr(self, "fill_color", None)
+            if color is None:
+                return
+            radius = getattr(self, "corner_radius", 0.0)
+            color.setFill()
+            AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                self.bounds(), radius, radius
+            ).fill()
+
+    class AccountRow(FilledView):
+        """One account. Clicking anywhere outside its buttons switches to it."""
+
+        def initWithFrame_(self, frame):
+            self = objc.super(AccountRow, self).initWithFrame_(frame)
+            if self is None:
+                return None
+            self.on_activate = None
+            self.resting_color = None
+            self.fill_color = None
+            self.corner_radius = 8.0
+            self.addTrackingArea_(
+                AppKit.NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
+                    AppKit.NSZeroRect,
+                    AppKit.NSTrackingMouseEnteredAndExited
+                    | AppKit.NSTrackingActiveAlways
+                    | AppKit.NSTrackingInVisibleRect,
+                    self,
+                    None,
+                )
+            )
+            return self
+
+        def acceptsFirstMouse_(self, _event) -> bool:
+            return True
+
+        def hitTest_(self, point):
+            hit = objc.super(AccountRow, self).hitTest_(point)
+            if hit is None or isinstance(hit, AppKit.NSButton):
+                return hit
+            return self
+
+        @objc.python_method
+        def _set_fill(self, color) -> None:
+            self.fill_color = color
+            self.setNeedsDisplay_(True)
+
+        def mouseEntered_(self, _event) -> None:
+            if self.on_activate is not None:
+                self._set_fill(AppKit.NSColor.labelColor().colorWithAlphaComponent_(0.07))
+
+        def mouseExited_(self, _event) -> None:
+            self._set_fill(self.resting_color)
+
+        def mouseDown_(self, _event) -> None:
+            if self.on_activate is not None:
+                self._set_fill(AppKit.NSColor.labelColor().colorWithAlphaComponent_(0.14))
+
+        def mouseUp_(self, event) -> None:
+            self._set_fill(self.resting_color)
+            point = self.convertPoint_fromView_(event.locationInWindow(), None)
+            if AppKit.NSPointInRect(point, self.bounds()):
+                self.activate()
+
+        @objc.python_method
+        def activate(self) -> None:
+            if self.on_activate is not None:
+                self.on_activate()
 
     class PopoverContentController(AppKit.NSViewController):
         """Compact native renderer for the controller's immutable models."""
@@ -96,23 +211,78 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
             return self
 
         @objc.python_method
-        def _label(self, text: str, frame: Rect, *, dim: bool = False):
+        def _label(
+            self,
+            text: str,
+            frame: Rect,
+            *,
+            size: float = 11.0,
+            weight: float = 0.0,
+            color=None,
+            align_right: bool = False,
+            digits: bool = False,
+            keep_ends: bool = False,
+        ):
             field = AppKit.NSTextField.labelWithString_(text)
             field.setFrame_(AppKit.NSMakeRect(frame.x, frame.y, frame.width, frame.height))
-            field.setFont_(AppKit.NSFont.monospacedSystemFontOfSize_weight_(11.0, 0.0))
-            field.setLineBreakMode_(AppKit.NSLineBreakByTruncatingTail)
-            if dim:
-                field.setTextColor_(AppKit.NSColor.secondaryLabelColor())
+            field.setFont_(
+                AppKit.NSFont.monospacedDigitSystemFontOfSize_weight_(size, weight)
+                if digits
+                else AppKit.NSFont.systemFontOfSize_weight_(size, weight)
+            )
+            # Accounts often differ only by domain, so names keep both ends.
+            field.setLineBreakMode_(
+                AppKit.NSLineBreakByTruncatingMiddle
+                if keep_ends
+                else AppKit.NSLineBreakByTruncatingTail
+            )
+            if color is not None:
+                field.setTextColor_(color)
+            if align_right:
+                field.setAlignment_(AppKit.NSTextAlignmentRight)
             return field
 
         @objc.python_method
-        def _button(self, title: str, action: str, frame: Rect, *, slot: str | None = None):
+        def _button(
+            self,
+            title: str,
+            action: str,
+            frame: Rect,
+            *,
+            slot: str | None = None,
+            prominent: bool = False,
+        ):
             button = AppKit.NSButton.alloc().initWithFrame_(
                 AppKit.NSMakeRect(frame.x, frame.y, frame.width, frame.height)
             )
             button.setTitle_(title)
             button.setBezelStyle_(AppKit.NSBezelStyleRounded)
-            button.setFont_(AppKit.NSFont.systemFontOfSize_(12.0))
+            button.setControlSize_(AppKit.NSControlSizeSmall)
+            button.setFont_(AppKit.NSFont.systemFontOfSize_(11.0))
+            button.setTarget_(self.host)
+            button.setAction_(action)
+            if prominent:
+                button.setBezelColor_(AppKit.NSColor.controlAccentColor())
+            if slot is not None:
+                button.setRepresentedObject_(slot)
+            return button
+
+        @objc.python_method
+        def _icon_button(self, symbol: str, label: str, action: str, frame: Rect, *, slot: str | None = None):
+            button = AppKit.NSButton.alloc().initWithFrame_(
+                AppKit.NSMakeRect(frame.x, frame.y, frame.width, frame.height)
+            )
+            image = AppKit.NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, label)
+            button.setImage_(image.imageWithSymbolConfiguration_(
+                AppKit.NSImageSymbolConfiguration.configurationWithPointSize_weight_(
+                    12.0, AppKit.NSFontWeightRegular
+                )
+            ))
+            button.setTitle_("")
+            button.setBordered_(False)
+            button.setImagePosition_(AppKit.NSImageOnly)
+            button.setContentTintColor_(AppKit.NSColor.secondaryLabelColor())
+            button.setToolTip_(label)
             button.setTarget_(self.host)
             button.setAction_(action)
             if slot is not None:
@@ -120,112 +290,145 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
             return button
 
         @objc.python_method
-        def _separator(self, frame: Rect):
-            separator = AppKit.NSView.alloc().initWithFrame_(
+        def _fill(self, color, frame: Rect, *, radius: float = 0.0):
+            view = FilledView.alloc().initWithFrame_(
                 AppKit.NSMakeRect(frame.x, frame.y, frame.width, frame.height)
             )
-            separator.setWantsLayer_(True)
-            separator.layer().setBackgroundColor_(AppKit.NSColor.separatorColor().CGColor())
-            return separator
+            view.fill_color = color
+            view.corner_radius = radius
+            return view
 
         @objc.python_method
-        def _add(self, view, parent) -> None:
-            parent.addSubview_(view)
-
-        @objc.python_method
-        def _local(self, frame: Rect, parent_frame: Rect) -> Rect:
-            return Rect(frame.x - parent_frame.x, frame.y - parent_frame.y, frame.width, frame.height)
-
-        @objc.python_method
-        def _button_pair(self, frame: Rect) -> tuple[Rect, Rect]:
-            gap = 8.0
-            button_width = (frame.width - gap) / 2
-            return (
-                Rect(frame.x, frame.y, button_width, BUTTON_HEIGHT),
-                Rect(frame.x + button_width + gap, frame.y, button_width, BUTTON_HEIGHT),
+        def _badge(self, account: PopoverAccountViewModel, frame: Rect, *, muted: bool):
+            try:
+                index = int(account.number) - 1
+            except ValueError:
+                index = 0
+            color = getattr(AppKit.NSColor, _BADGE_COLORS[index % len(_BADGE_COLORS)])()
+            if muted:
+                color = color.colorWithAlphaComponent_(0.55)
+            badge = self._fill(color, frame, radius=frame.width / 2)
+            initial = self._label(
+                account.display_name[:1].upper(),
+                Rect(0.0, 4.0, frame.width, 16.0),
+                size=12.0,
+                weight=AppKit.NSFontWeightSemibold,
+                color=AppKit.NSColor.whiteColor(),
             )
+            initial.setAlignment_(AppKit.NSTextAlignmentCenter)
+            badge.addSubview_(initial)
+            return badge
 
         @objc.python_method
-        def _account_group(
-            self, account: PopoverAccountViewModel, layout, document, *, show_separator: bool
-        ) -> None:
-            group = FlippedView.alloc().initWithFrame_(
-                AppKit.NSMakeRect(
-                    layout.frame.x, layout.frame.y, layout.frame.width, layout.frame.height
-                )
-            )
-            document.addSubview_(group)
-            if show_separator:
-                group.addSubview_(self._separator(Rect(0.0, 0.0, layout.frame.width, 1.0)))
-            marker = "●" if account.is_active else "○"
-            state = " DISABLED" if account.disabled else ""
-            group.addSubview_(
+        def _usage_color(self, state: CapacityState):
+            if state is CapacityState.LIMIT_REACHED:
+                return AppKit.NSColor.systemRedColor()
+            if state is CapacityState.NEAR_LIMIT:
+                return AppKit.NSColor.systemOrangeColor()
+            return AppKit.NSColor.systemGreenColor()
+
+        @objc.python_method
+        def _usage_cell(self, row: UsageRowViewModel, cell, parent, *, show_reset: bool) -> None:
+            parent.addSubview_(
                 self._label(
-                    f"{marker} #{account.number}  {account.display_name}{state}",
-                    self._local(layout.title, layout.frame),
+                    f"{row.label} {row.used_percent:.0f}%",
+                    cell.text,
+                    size=10.0,
+                    color=AppKit.NSColor.secondaryLabelColor(),
+                    digits=True,
                 )
             )
-            group.addSubview_(
+            if show_reset and row.reset_text:
+                parent.addSubview_(
+                    self._label(
+                        row.reset_text,
+                        cell.text,
+                        size=10.0,
+                        color=AppKit.NSColor.tertiaryLabelColor(),
+                        align_right=True,
+                        digits=True,
+                    )
+                )
+            track = self._fill(AppKit.NSColor.quaternaryLabelColor(), cell.bar, radius=1.5)
+            parent.addSubview_(track)
+            percent = max(0.0, min(100.0, row.used_percent))
+            if percent > 0:
+                width = max(3.0, cell.bar.width * percent / 100.0)
+                parent.addSubview_(
+                    self._fill(
+                        self._usage_color(row.state),
+                        Rect(cell.bar.x, cell.bar.y, width, cell.bar.height),
+                        radius=1.5,
+                    )
+                )
+
+        @objc.python_method
+        def _account_row(self, account: PopoverAccountViewModel, layout, document) -> None:
+            frame = layout.frame
+            row = AccountRow.alloc().initWithFrame_(
+                AppKit.NSMakeRect(frame.x, frame.y, frame.width, frame.height)
+            )
+            document.addSubview_(row)
+            expired = account_login_expired(account)
+            if account.is_active:
+                row.resting_color = AppKit.NSColor.systemGreenColor().colorWithAlphaComponent_(0.16)
+                row.fill_color = row.resting_color
+            if account_can_activate(account):
+                slot = account.number
+                row.on_activate = lambda: self.host.activate_slot(slot)
+            row.setToolTip_(account_tooltip(account))
+            row.addSubview_(self._badge(account, layout.avatar, muted=expired))
+            row.addSubview_(
                 self._label(
-                    account.capacity_summary,
-                    self._local(layout.capacity, layout.frame),
-                    dim=True,
+                    account.alias or account.email,
+                    layout.name,
+                    size=12.0,
+                    weight=AppKit.NSFontWeightMedium,
+                    color=AppKit.NSColor.secondaryLabelColor() if expired else None,
+                    keep_ends=True,
                 )
             )
-            group.addSubview_(
-                self._label(account.email, self._local(layout.email, layout.frame), dim=True)
-            )
-            freshness = account.freshness_detail
-            if account.sentinel_note:
-                freshness = f"{freshness} · {account.sentinel_note}"
-            group.addSubview_(
-                self._label(freshness, self._local(layout.freshness, layout.frame), dim=True)
-            )
-            for row, frame in zip(account.rows, layout.usage_rows, strict=True):
-                self._usage_row(row, self._local(frame, layout.frame), group)
-            # Switching takes one click, so nothing else stands between a stray
-            # click and replacing a working login with a dead refresh token.
-            needs_login = account.sentinel == USAGE_RELOGIN_REQUIRED
-            make_active = self._button(
-                "Active"
-                if account.is_active
-                else "Re-login needed"
-                if needs_login
-                else "Make active",
-                "makeActive:",
-                self._local(layout.make_active, layout.frame),
-                slot=account.number,
-            )
-            make_active.setEnabled_(not account.is_active and not needs_login)
-            group.addSubview_(make_active)
-            if account.session_available:
-                session_button = self._button(
-                    "Session",
-                    "isolatedSession:",
-                    self._local(layout.session, layout.frame),
-                    slot=account.number,
-                )
+            if account.is_active:
+                status_color = AppKit.NSColor.systemGreenColor()
+            elif expired:
+                status_color = AppKit.NSColor.systemOrangeColor()
             else:
-                session_button = self._button(
-                    "Default profile" if account.is_active else "Session unsupported",
-                    "showMain:",
-                    self._local(layout.session, layout.frame),
+                status_color = AppKit.NSColor.secondaryLabelColor()
+            row.addSubview_(
+                self._label(
+                    account_status_text(account),
+                    layout.status,
+                    size=10.0,
+                    color=status_color,
+                    align_right=True,
+                    digits=True,
                 )
-                session_button.setEnabled_(False)
-            group.addSubview_(session_button)
-
-        @objc.python_method
-        def _usage_row(self, row: UsageRowViewModel, frame: Rect, parent) -> None:
-            suffix = row.amount_text or f"{row.used_percent:.0f}%"
-            if row.reset_text:
-                suffix += f"  {row.reset_text}"
-            marker = "!" if row.limit_reached else "+" if row.ahead_of_pace else " "
-            field = self._label(f" {marker} {row.label:<11} {_bar(row.used_percent)} {suffix}", frame)
-            if row.state is CapacityState.LIMIT_REACHED:
-                field.setTextColor_(AppKit.NSColor.systemRedColor())
-            elif row.state is CapacityState.NEAR_LIMIT:
-                field.setTextColor_(AppKit.NSColor.systemOrangeColor())
-            parent.addSubview_(field)
+            )
+            usage = compact_usage_rows(account)
+            for usage_row, cell in zip(usage, layout.usage_cells, strict=True):
+                self._usage_cell(usage_row, cell, row, show_reset=len(usage) <= 2)
+            if not usage:
+                detail = account.sentinel_note if account.sentinel and not expired else account.freshness_detail
+                row.addSubview_(
+                    self._label(detail, layout.detail, size=10.0, color=AppKit.NSColor.tertiaryLabelColor())
+                )
+            if account.session_available:
+                if expired:
+                    login = self._button("Log in", "isolatedSession:", layout.login_button, slot=account.number)
+                    login.setControlSize_(AppKit.NSControlSizeMini)
+                    login.setFont_(AppKit.NSFont.systemFontOfSize_(10.0))
+                    login.setToolTip_("Open a Terminal session to log this account back in")
+                    row.addSubview_(login)
+                else:
+                    row.addSubview_(
+                        self._icon_button(
+                            "terminal",
+                            "New Terminal session on this account",
+                            "isolatedSession:",
+                            layout.session_button,
+                            slot=account.number,
+                        )
+                    )
 
         @objc.python_method
         def _scroll_document(self, root, viewport: Rect, document_height: float, *, identifier: str):
@@ -235,6 +438,7 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
             scroll.setIdentifier_(identifier)
             scroll.setHasVerticalScroller_(True)
             scroll.setAutohidesScrollers_(True)
+            scroll.setScrollerStyle_(AppKit.NSScrollerStyleOverlay)
             scroll.setDrawsBackground_(False)
             document = FlippedView.alloc().initWithFrame_(
                 AppKit.NSMakeRect(0, 0, viewport.width, document_height)
@@ -254,13 +458,49 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
             self.host.popover.setContentSize_(AppKit.NSMakeSize(frame.width, frame.height))
 
         @objc.python_method
-        def _render_main(self, root, model: MenuBarPopoverViewModel, scroll_offset: float, layout) -> None:
-            root.addSubview_(self._separator(Rect(0.0, layout.header.max_y - 1.0, POPOVER_WIDTH, 1.0)))
-            root.addSubview_(self._label("CLAUDE SWAP / CAPACITY", layout.title))
-            feedback = self.host.last_message or "Store-backed quota snapshot"
-            root.addSubview_(
-                self._label(feedback, Rect(layout.title.x, 33.0, 390.0, 18.0), dim=True)
+        def _main_layout(self, model: MenuBarPopoverViewModel):
+            return plan_main_popover(
+                tuple(len(compact_usage_rows(account)) for account in model.accounts),
+                has_footer=self._can_rotate(model),
             )
+
+        @objc.python_method
+        def _can_rotate(self, model: MenuBarPopoverViewModel) -> bool:
+            # Rotation only checks that a slot has stored credentials, so with
+            # nothing alive to move to it could land on a dead refresh token.
+            return any(account_can_activate(account) for account in model.accounts)
+
+        @objc.python_method
+        def _render_main(self, root, model: MenuBarPopoverViewModel, scroll_offset: float, layout) -> None:
+            message = self.host.last_message
+            if message:
+                field = self._label(
+                    message,
+                    layout.message,
+                    size=10.0,
+                    color=AppKit.NSColor.systemRedColor()
+                    if message.startswith("Couldn't")
+                    else AppKit.NSColor.secondaryLabelColor(),
+                )
+                field.setMaximumNumberOfLines_(2)
+                field.cell().setWraps_(True)
+                field.setToolTip_(message)
+                root.addSubview_(field)
+            else:
+                root.addSubview_(
+                    self._label(
+                        "Claude accounts",
+                        layout.title,
+                        size=13.0,
+                        weight=AppKit.NSFontWeightSemibold,
+                    )
+                )
+            for symbol, label, action, frame in (
+                ("arrow.clockwise", "Refresh usage", "refreshNow:", layout.refresh),
+                ("gearshape", "Settings", "showSettings:", layout.settings),
+                ("ellipsis.circle", "Manage accounts", "showOverflow:", layout.more),
+            ):
+                root.addSubview_(self._icon_button(symbol, label, action, frame))
             scroll, document = self._scroll_document(
                 root,
                 layout.accounts_viewport,
@@ -268,153 +508,184 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
                 identifier="accounts",
             )
             if model.accounts:
-                for index, (account, account_layout) in enumerate(
-                    zip(model.accounts, layout.accounts, strict=True)
-                ):
-                    self._account_group(
-                        account, account_layout, document, show_separator=index > 0
-                    )
+                for account, account_layout in zip(model.accounts, layout.accounts, strict=True):
+                    self._account_row(account, account_layout, document)
             else:
                 document.addSubview_(
                     self._label(
-                        "No managed accounts. Add one from More…", Rect(14.0, 14.0, 390.0, 20.0), dim=True
+                        "No accounts yet. Add your login from the ⋯ menu.",
+                        Rect(14.0, 16.0, POPOVER_WIDTH - 28.0, 16.0),
+                        color=AppKit.NSColor.secondaryLabelColor(),
                     )
                 )
-            root.addSubview_(self._separator(Rect(0.0, layout.footer.y, POPOVER_WIDTH, 1.0)))
-            # Rotation only checks that a slot has stored credentials, so with
-            # nothing alive to move to it could land on a dead refresh token.
-            can_rotate = any(
-                not account.is_active and account.sentinel != USAGE_RELOGIN_REQUIRED
-                for account in model.accounts
-            )
-            for title, action, frame in (
-                ("Rotate next", "rotateNext:", layout.rotate_next),
-                ("Switch best", "switchBest:", layout.switch_best),
-                ("Next available", "nextAvailable:", layout.next_available),
-            ):
-                button = self._button(title, action, frame)
-                button.setEnabled_(can_rotate)
-                root.addSubview_(button)
-            root.addSubview_(self._button("Refresh", "refreshNow:", layout.refresh))
-            root.addSubview_(self._button("More…", "showOverflow:", layout.more))
-            root.addSubview_(self._button("Settings", "showSettings:", layout.settings))
+            if layout.footer is not None:
+                for title, action, frame, prominent, tip in (
+                    ("Best", "switchBest:", layout.switch_best, True, "Switch to the account with the most room"),
+                    ("Next", "nextAvailable:", layout.next_available, False, "Switch to the next account with room"),
+                    ("Rotate", "rotateNext:", layout.rotate_next, False, "Switch to the next account in order"),
+                ):
+                    button = self._button(title, action, frame, prominent=prominent)
+                    button.setToolTip_(tip)
+                    root.addSubview_(button)
             maximum_offset = max(0.0, layout.accounts_document_height - layout.accounts_viewport.height)
             scroll.contentView().scrollToPoint_(AppKit.NSMakePoint(0.0, min(scroll_offset, maximum_offset)))
             scroll.reflectScrolledClipView_(scroll.contentView())
 
         @objc.python_method
-        def _render_secondary_header(self, document, layout, title: str, subtitle: str) -> None:
-            document.addSubview_(self._label(title, layout.title))
-            document.addSubview_(self._label(subtitle, layout.subtitle, dim=True))
+        def _secondary_header(self, document, layout, title: str, back_action: str) -> None:
+            document.addSubview_(self._icon_button("chevron.left", "Back", back_action, layout.back))
+            document.addSubview_(
+                self._label(title, layout.title, size=13.0, weight=AppKit.NSFontWeightSemibold)
+            )
+
+        @objc.python_method
+        def _overflow_heights(self, model: MenuBarPopoverViewModel) -> list[float]:
+            return [BUTTON_HEIGHT for _ in model.accounts] + [BUTTON_HEIGHT] * 3
 
         @objc.python_method
         def _overflow(self, document, model: MenuBarPopoverViewModel) -> None:
-            item_heights = [34.0 for _ in model.accounts] + [BUTTON_HEIGHT] * 4
-            layout = plan_scroll_screen(item_heights)
-            self._render_secondary_header(
-                document, layout, "MORE ACCOUNT CONTROLS", "Manage accounts and inspect the switch log"
-            )
+            layout = plan_scroll_screen(self._overflow_heights(model))
+            self._secondary_header(document, layout, "Manage accounts", "showMain:")
             for account, frame in zip(model.accounts, layout.items, strict=False):
+                buttons_width = 140.0
                 document.addSubview_(
-                    self._label(f"#{account.number}  {account.display_name}", Rect(frame.x, frame.y + 4.0, 220.0, 20.0))
+                    self._label(
+                        account.alias or account.email,
+                        Rect(frame.x, frame.y + 3.0, frame.width - buttons_width - 6.0, 16.0),
+                        keep_ends=True,
+                    )
                 )
-                left, right = self._button_pair(Rect(245.0, frame.y + 4.0, 157.0, BUTTON_HEIGHT))
-                state = "Enable" if account.disabled else "Disable"
-                document.addSubview_(self._button(state, "toggleDisabled:", left, slot=account.number))
-                document.addSubview_(self._button("Remove", "removeAccount:", right, slot=account.number))
+                state, remove = button_row(
+                    Rect(frame.max_x - buttons_width, frame.y, buttons_width, BUTTON_HEIGHT), 2
+                )
+                state_title = "Enable" if account.disabled else "Disable"
+                document.addSubview_(self._button(state_title, "toggleDisabled:", state, slot=account.number))
+                document.addSubview_(self._button("Remove", "removeAccount:", remove, slot=account.number))
             controls = layout.items[len(model.accounts):]
-            add_current, add_token = self._button_pair(controls[0])
-            refresh_creds, settings = self._button_pair(controls[1])
-            history, reveal = self._button_pair(controls[2])
-            quit_button, back = self._button_pair(controls[3])
-            for title, action, frame in (
-                ("Add current", "addCurrent:", add_current),
-                ("Add token", "addToken:", add_token),
-                ("Refresh creds", "refreshCredentials:", refresh_creds),
-                ("Settings", "showSettings:", settings),
-                ("Switch history", "showHistory:", history),
-                ("Reveal full log", "revealLog:", reveal),
-                ("Quit", "quit:", quit_button),
-                ("Back", "showMain:", back),
+            pairs = (
+                (("Add current login", "addCurrent:"), ("Add setup token", "addToken:")),
+                (("Refresh login", "refreshCredentials:"), ("Switch history", "showHistory:")),
+                (("Show log file", "revealLog:"), ("Quit", "quit:")),
+            )
+            for frame, pair in zip(controls, pairs, strict=True):
+                for (title, action), button_frame in zip(pair, button_row(frame, 2), strict=True):
+                    document.addSubview_(self._button(title, action, button_frame))
+
+        @objc.python_method
+        def _choices(self, document, frame: Rect, label: str, options, action: str) -> None:
+            document.addSubview_(
+                self._label(
+                    label,
+                    Rect(frame.x, frame.y, frame.width, 14.0),
+                    size=10.0,
+                    color=AppKit.NSColor.secondaryLabelColor(),
+                )
+            )
+            row = Rect(frame.x, frame.y + 16.0, frame.width, BUTTON_HEIGHT)
+            for (title, value, selected), button_frame in zip(
+                options, button_row(row, len(options)), strict=True
             ):
-                document.addSubview_(self._button(title, action, frame))
+                document.addSubview_(
+                    self._button(
+                        f"✓ {title}" if selected else title,
+                        action,
+                        button_frame,
+                        slot=value,
+                        prominent=selected,
+                    )
+                )
+
+        @objc.python_method
+        def _settings_heights(self) -> list[float]:
+            return [BUTTON_HEIGHT, 38.0, 38.0, BUTTON_HEIGHT, 38.0]
 
         @objc.python_method
         def _settings(self, document) -> None:
-            layout = plan_scroll_screen((BUTTON_HEIGHT, 64.0, 64.0, 64.0, BUTTON_HEIGHT))
-            self._render_secondary_header(document, layout, "DISPLAY AND AUTO-SWITCH", "Selections save immediately")
-            toggle, scoped = self._button_pair(layout.items[0])
+            layout = plan_scroll_screen(self._settings_heights())
+            self._secondary_header(document, layout, "Settings", "showMain:")
             settings = self.host.controller.settings
-            toggle_title = "Hide account name" if settings.show_account_name else "Show account name"
-            scoped_title = "Hide model limits" if settings.title_scoped else "Show model limits"
-            document.addSubview_(self._button(toggle_title, "toggleAccountName:", toggle))
-            document.addSubview_(self._button(scoped_title, "toggleScoped:", scoped))
-
-            title_section = layout.items[1]
-            document.addSubview_(self._label("Title percentage", Rect(title_section.x, title_section.y, 180.0, 18.0), dim=True))
-            for index, mode in enumerate(TITLE_PCT_CHOICES):
-                title = {"off": "Off", "5h": "5h", "7d": "7d", "both": "Both"}[mode]
-                mark = "✓ " if settings.title_pct == mode else ""
-                document.addSubview_(
-                    self._button(
-                        mark + title,
-                        "setTitlePercent:",
-                        Rect(14.0 + index * 99.0, title_section.y + 24.0, 91.0, BUTTON_HEIGHT),
-                        slot=mode,
-                    )
-                )
-
-            refresh_section = layout.items[2]
-            document.addSubview_(self._label("Snapshot refresh", Rect(refresh_section.x, refresh_section.y, 180.0, 18.0), dim=True))
-            for index, seconds in enumerate(REFRESH_CHOICES):
-                mark = "✓ " if settings.refresh_interval == seconds else ""
-                title = f"{seconds // 60} min" if seconds >= 60 else "30 sec"
-                document.addSubview_(
-                    self._button(
-                        mark + title,
-                        "setRefreshInterval:",
-                        Rect(14.0 + index * 132.0, refresh_section.y + 24.0, 124.0, BUTTON_HEIGHT),
-                        slot=str(seconds),
-                    )
-                )
-
-            auto_section = layout.items[3]
-            enabled = settings.auto_switch_enabled
-            auto_title = "Auto-switch: on" if enabled else "Auto-switch: off"
+            name, scoped = button_row(layout.items[0], 2)
             document.addSubview_(
-                self._button(auto_title, "toggleAutoSwitch:", Rect(14.0, auto_section.y, 192.0, BUTTON_HEIGHT))
+                self._button(
+                    "Hide account name" if settings.show_account_name else "Show account name",
+                    "toggleAccountName:",
+                    name,
+                )
+            )
+            document.addSubview_(
+                self._button(
+                    "Hide model limits" if settings.title_scoped else "Show model limits",
+                    "toggleScoped:",
+                    scoped,
+                )
+            )
+            self._choices(
+                document,
+                layout.items[1],
+                "Usage in menu bar",
+                tuple(
+                    ({"off": "Off", "5h": "5h", "7d": "7d", "both": "Both"}[mode], mode, settings.title_pct == mode)
+                    for mode in TITLE_PCT_CHOICES
+                ),
+                "setTitlePercent:",
+            )
+            self._choices(
+                document,
+                layout.items[2],
+                "Refresh usage every",
+                tuple(
+                    (
+                        f"{seconds // 60} min" if seconds >= 60 else f"{seconds} sec",
+                        str(seconds),
+                        settings.refresh_interval == seconds,
+                    )
+                    for seconds in REFRESH_CHOICES
+                ),
+                "setRefreshInterval:",
+            )
+            document.addSubview_(
+                self._button(
+                    "Auto-switch: on" if settings.auto_switch_enabled else "Auto-switch: off",
+                    "toggleAutoSwitch:",
+                    layout.items[3],
+                    prominent=settings.auto_switch_enabled,
+                )
             )
             threshold = self.host.controller.auto_switch_threshold()
-            document.addSubview_(
-                self._label(f"Threshold: {threshold}%", Rect(216.0, auto_section.y, 120.0, 18.0), dim=True)
+            self._choices(
+                document,
+                layout.items[4],
+                "Auto-switch at",
+                tuple((f"{percent}%", str(percent), threshold == percent) for percent in AUTO_THRESHOLD_CHOICES),
+                "setThreshold:",
             )
-            for index, percent in enumerate(AUTO_THRESHOLD_CHOICES):
-                mark = "✓ " if threshold == percent else ""
-                document.addSubview_(
-                    self._button(
-                        mark + f"{percent}%",
-                        "setThreshold:",
-                        Rect(14.0 + index * 99.0, auto_section.y + 32.0, 91.0, BUTTON_HEIGHT),
-                        slot=str(percent),
-                    )
-                )
-            document.addSubview_(self._button("Back", "showMain:", layout.items[4]))
+
+        @objc.python_method
+        def _history_heights(self) -> list[float]:
+            entries = self.host.controller.history
+            heights = [16.0 for _ in entries] if entries else [16.0]
+            heights.append(BUTTON_HEIGHT)
+            return heights
 
         @objc.python_method
         def _history(self, document) -> None:
             entries = self.host.controller.history
-            item_heights = [22.0 for _ in entries] if entries else [22.0]
-            item_heights.append(BUTTON_HEIGHT)
-            layout = plan_scroll_screen(item_heights)
-            self._render_secondary_header(document, layout, "SWITCH HISTORY", "Most recent first")
+            layout = plan_scroll_screen(self._history_heights())
+            self._secondary_header(document, layout, "Switch history", "showOverflow:")
             if entries:
                 for entry, frame in zip(entries, layout.items, strict=False):
-                    document.addSubview_(self._label(entry, frame))
+                    field = self._label(entry, frame, size=10.0, digits=True)
+                    field.setToolTip_(entry)
+                    document.addSubview_(field)
             else:
-                document.addSubview_(self._label("No switches logged yet", layout.items[0], dim=True))
-            reveal, back = self._button_pair(layout.items[-1])
-            document.addSubview_(self._button("Reveal full log", "revealLog:", reveal))
-            document.addSubview_(self._button("Back", "showOverflow:", back))
+                document.addSubview_(
+                    self._label(
+                        "No switches yet",
+                        layout.items[0],
+                        color=AppKit.NSColor.secondaryLabelColor(),
+                    )
+                )
+            document.addSubview_(self._button("Show log file", "revealLog:", layout.items[-1]))
 
         def renderModel_screen_(self, model, screen: str) -> None:
             root = self.view()
@@ -428,18 +699,16 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
             for child in tuple(root.subviews()):
                 child.removeFromSuperview()
             if screen == "main":
-                layout = plan_main_popover(tuple(len(account.rows) for account in model.accounts))
+                layout = self._main_layout(model)
                 self._resize_root(root, layout.root)
                 self._render_main(root, model, scroll_offset, layout)
                 return
             if screen == "overflow":
-                item_heights = [34.0 for _ in model.accounts] + [BUTTON_HEIGHT] * 4
+                item_heights = self._overflow_heights(model)
             elif screen == "settings":
-                item_heights = [BUTTON_HEIGHT, 64.0, 64.0, 64.0, BUTTON_HEIGHT]
+                item_heights = self._settings_heights()
             else:
-                entries = self.host.controller.history
-                item_heights = [22.0 for _ in entries] if entries else [22.0]
-                item_heights.append(BUTTON_HEIGHT)
+                item_heights = self._history_heights()
             layout = plan_scroll_screen(item_heights)
             self._resize_root(root, layout.viewport)
             _scroll, document = self._scroll_document(
@@ -469,7 +738,8 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
                 AppKit.NSVariableStatusItemLength
             )
             button = self.status_item.button()
-            button.setTitle_(ICON)
+            button.setImage_(_status_icon())
+            button.setImagePosition_(AppKit.NSImageLeading)
             button.setTarget_(self)
             button.setAction_("togglePopover:")
             self.content = PopoverContentController.alloc().initWithHost_(self)
@@ -477,6 +747,7 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
             self.popover.setBehavior_(AppKit.NSPopoverBehaviorTransient)
             self.popover.setContentViewController_(self.content)
             self.popover.setContentSize_(AppKit.NSMakeSize(POPOVER_WIDTH, POPOVER_MAX_HEIGHT))
+            self.popover.setDelegate_(self)
             self.controller.bind_ui(self._render, self._message)
             self._install_refresh_timer()
             self._install_active_account_watcher()
@@ -489,7 +760,7 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
 
         @objc.python_method
         def _render(self, model: MenuBarPopoverViewModel, title: str) -> None:
-            self.status_item.button().setTitle_(title)
+            self.status_item.button().setTitle_(_title_text(title))
             timer = getattr(self, "refresh_timer", None)
             if timer is not None and int(round(timer.timeInterval())) != self.controller.settings.refresh_interval:
                 self._install_refresh_timer()
@@ -497,11 +768,14 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
 
         @objc.python_method
         def _message(self, title: str, message: str) -> None:
-            # Persist controller feedback in the primary view so a transient
-            # popover never loses an error after it closes.
+            # Keep feedback that arrives while the popover is closed until it
+            # has been seen; popoverDidClose_ clears it.
             self.last_message = f"{title}: {message}"
             self.screen = "main"
             self._render(self.controller.view_model, self.controller.title)
+
+        def popoverDidClose_(self, _notification) -> None:
+            self.last_message = ""
 
         @objc.python_method
         def _install_refresh_timer(self, seconds: int | None = None) -> None:
@@ -546,15 +820,26 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
             AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
             return alert.runModal() == AppKit.NSAlertFirstButtonReturn
 
-        def makeActive_(self, sender) -> None:
-            # One click: switching is routine and reversible, so it takes no
-            # confirmation. The controller worker calls only
-            # switcher.switch_to(slot, json_output=True).
-            self.controller.make_active(str(sender.representedObject()))
+        @objc.python_method
+        def activate_slot(self, slot: str) -> None:
+            """Switch in one click: routine and reversible, so no confirmation.
+
+            The render is deferred because this runs inside the clicked row's
+            own mouse handler, and rendering replaces that row.
+            """
+            account = next((item for item in self.controller.view_model.accounts if item.number == slot), None)
+            if account is None or not account_can_activate(account):
+                return
+            self.last_message = f"Switching to {account.alias or account.email}"
+            # The controller worker calls only switcher.switch_to(slot, json_output=True).
+            self.controller.make_active(slot)
+            self._dispatch_main(
+                lambda: self._render(self.controller.view_model, self.controller.title)
+            )
 
         def isolatedSession_(self, sender) -> None:
             slot = str(sender.representedObject())
-            if self._confirm("Launch isolated session", f"Open Terminal with cswap run {slot}?", "Launch"):
+            if self._confirm("Open Terminal session", f"Open Terminal with cswap run {slot}?", "Open"):
                 # This deliberately hands the isolated session to the local CLI process.
                 self.controller.launch_isolated_session(slot)
 

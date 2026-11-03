@@ -191,9 +191,9 @@ def test_capacity_summary_leads_with_a_rejected_probe_over_low_windows():
     resets_at = datetime.fromtimestamp(_NOW + 3600, tz=timezone.utc).isoformat()
 
     assert viewmodel._capacity_summary((row,), {"resets_at": resets_at}, _NOW) == (
-        "rejected (!) (1h 0m)"
+        "Rejected 1h 0m"
     )
-    assert viewmodel._capacity_summary((row,), {}, _NOW) == "rejected (!)"
+    assert viewmodel._capacity_summary((row,), {}, _NOW) == "Rejected"
     assert viewmodel._capacity_summary((row,), None, _NOW) == "97% left"
 
 
@@ -206,5 +206,78 @@ def test_capacity_summary_does_not_report_room_on_an_expired_login():
         viewmodel._capacity_summary(
             (row,), None, _NOW, sentinel=viewmodel.USAGE_RELOGIN_REQUIRED
         )
-        == "login expired"
+        == "Login expired"
     )
+
+
+def _compact_account(rows, *, sentinel=None, active=False, disabled=False):
+    return viewmodel.PopoverAccountViewModel(
+        number="2",
+        email="person@example.test",
+        alias="",
+        display_name="person",
+        is_active=active,
+        disabled=disabled,
+        freshness=viewmodel.FreshnessState.FRESH,
+        freshness_detail="Updated just now",
+        sentinel=sentinel,
+        sentinel_note="re-login needed" if sentinel else None,
+        has_last_good=True,
+        capacity_summary="60% left",
+        rows=rows,
+        session_available=not active,
+    )
+
+
+def _compact_row(label, scope, percent):
+    return viewmodel._usage_row(label, scope, {"pct": percent}, _NOW, None)
+
+
+def test_compact_usage_rows_keep_windows_then_the_tightest_model_limit():
+    scopes = viewmodel.UsageScope
+    rows = (
+        _compact_row("Spend", scopes.SPEND, 90.0),
+        _compact_row("5h", scopes.FIVE_HOUR, 10.0),
+        _compact_row("7d", scopes.SEVEN_DAY, 20.0),
+        _compact_row("Sonnet", scopes.SCOPED, 30.0),
+        _compact_row("Fable", scopes.SCOPED, 80.0),
+    )
+
+    compact = viewmodel.compact_usage_rows(_compact_account(rows))
+
+    assert [row.label for row in compact] == ["5h", "7d", "Fable"]
+
+
+def test_expired_login_shows_no_meters_and_cannot_be_activated():
+    row = _compact_row("5h", viewmodel.UsageScope.FIVE_HOUR, 10.0)
+    expired = _compact_account((row,), sentinel=viewmodel.USAGE_RELOGIN_REQUIRED)
+
+    assert viewmodel.compact_usage_rows(expired) == ()
+    assert not viewmodel.account_can_activate(expired)
+    assert viewmodel.account_status_text(expired) == "Login expired"
+
+
+def test_status_text_and_activation_follow_account_state():
+    active = _compact_account((), active=True)
+    disabled = _compact_account((), disabled=True)
+    plain = _compact_account(())
+
+    assert viewmodel.account_status_text(active) == "Active"
+    assert not viewmodel.account_can_activate(active)
+    assert viewmodel.account_status_text(disabled) == "Disabled"
+    assert viewmodel.account_can_activate(disabled)
+    assert viewmodel.account_status_text(plain) == "60% left"
+    assert viewmodel.account_can_activate(plain)
+
+
+def test_tooltip_keeps_what_the_compact_row_leaves_out():
+    scopes = viewmodel.UsageScope
+    resets_at = datetime.fromtimestamp(_NOW + 3600, tz=timezone.utc).isoformat()
+    row = viewmodel._usage_row(
+        "7d", scopes.SEVEN_DAY, {"pct": 40.0, "resets_at": resets_at}, _NOW, None
+    )
+    tooltip = viewmodel.account_tooltip(_compact_account((row,)))
+
+    assert "person@example.test" in tooltip
+    assert "Updated just now" in tooltip
+    assert "7d: 40%, resets in 1h 0m" in tooltip

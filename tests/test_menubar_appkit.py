@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from claude_swap import menubar_appkit
 from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
-from claude_swap.menubar_layout import POPOVER_MAX_HEIGHT
+from claude_swap.menubar_layout import POPOVER_MAX_HEIGHT, POPOVER_WIDTH
 from claude_swap.menubar_viewmodel import (
     CapacityState,
     FreshnessState,
@@ -126,138 +126,184 @@ class NativeMenuBarAppKitSmokeTests(unittest.TestCase):
             status_bar.removeStatusItem_(item)
         self.assertIsNotNone(application)
 
-    def test_account_needing_relogin_cannot_be_made_active(self) -> None:
-        """One-click switching must not put a dead refresh token in the live login."""
+    def _subviews(self, view) -> list:
+        found = []
+        for child in view.subviews():
+            found.append(child)
+            found.extend(self._subviews(child))
+        return found
+
+    def _accounts_document(self, host):
         import AppKit
 
+        return next(
+            child
+            for child in host.content.view().subviews()
+            if isinstance(child, AppKit.NSScrollView) and child.identifier() == "accounts"
+        ).documentView()
+
+    def _titles(self, host) -> list[str]:
+        return self._button_titles(host.content.view())
+
+    def test_status_item_uses_a_template_image_not_a_text_glyph(self) -> None:
+        _application, host = self._host(_model(1))
+        host._render(_model(1), "⇄ matt 5h 10%")
+
+        button = host.status_item.button()
+        self.assertTrue(button.image().isTemplate())
+        self.assertEqual(str(button.title()), "matt 5h 10%")
+        host._render(_model(1), "⇄")
+        self.assertEqual(str(button.title()), "")
+
+    def test_clicking_a_row_switches_in_one_step_with_no_alert(self) -> None:
+        model = _model(2)
+        _application, host = self._host(model)
+        host.controller.view_model = model
+        host.content.renderModel_screen_(model, "main")
+        active_row, other_row = self._accounts_document(host).subviews()
+
+        with (
+            patch.object(host, "_confirm", side_effect=AssertionError("must not confirm")),
+            patch.object(host.controller, "make_active", create=True) as make_active,
+        ):
+            active_row.activate()
+            make_active.assert_not_called()
+            other_row.activate()
+        make_active.assert_called_once_with("2")
+        self.assertEqual(host.last_message, "Switching to account-2@example.test")
+        host.last_message = ""
+
+    def test_row_keeps_clicks_except_on_its_buttons(self) -> None:
+        import AppKit
+
+        model = _model(2)
+        _application, host = self._host(model)
+        host.content.renderModel_screen_(model, "main")
+        _active_row, other_row = self._accounts_document(host).subviews()
+
+        origin = other_row.frame().origin
+        label_point = AppKit.NSMakePoint(origin.x + 50.0, origin.y + 12.0)
+        self.assertEqual(other_row.hitTest_(label_point), other_row)
+        session = next(view for view in other_row.subviews() if isinstance(view, AppKit.NSButton))
+        session_frame = session.frame()
+        button_point = AppKit.NSMakePoint(
+            origin.x + session_frame.origin.x + 4.0, origin.y + session_frame.origin.y + 4.0
+        )
+        self.assertEqual(other_row.hitTest_(button_point), session)
+
+    def test_expired_account_offers_log_in_and_cannot_be_activated(self) -> None:
+        """One-click switching must not put a dead refresh token in the live login."""
+        base = _model(3)
+        dead = replace(base.accounts[1], sentinel=USAGE_RELOGIN_REQUIRED)
+        model = replace(base, accounts=(base.accounts[0], dead, base.accounts[2]))
+        _application, host = self._host(model)
+        host.controller.view_model = model
+        host.content.renderModel_screen_(model, "main")
+
+        dead_row = self._accounts_document(host).subviews()[1]
+        with patch.object(host.controller, "make_active", create=True) as make_active:
+            dead_row.activate()
+            host.activate_slot("2")
+        make_active.assert_not_called()
+        self.assertEqual(self._button_titles(dead_row), ["Log in"])
+
+    def test_rotation_buttons_are_hidden_with_nothing_alive_to_move_to(self) -> None:
         base = _model(2)
         dead = replace(base.accounts[1], sentinel=USAGE_RELOGIN_REQUIRED)
         model = replace(base, accounts=(base.accounts[0], dead))
         _application, host = self._host(model)
-        host.screen = "main"
+
         host.content.renderModel_screen_(model, "main")
-
-        def buttons(view):
-            found = []
-            for child in view.subviews():
-                if isinstance(child, AppKit.NSButton):
-                    found.append(child)
-                found.extend(buttons(child))
-            return found
-
-        by_title = {str(button.title()): button for button in buttons(host.content.view())}
-        self.assertNotIn("Make active", by_title)
-        self.assertFalse(by_title["Re-login needed"].isEnabled())
-        # An isolated session is the way to log back in, so it stays available.
-        self.assertTrue(by_title["Session"].isEnabled())
-        # Nothing alive to move to, so the rotation buttons are off too.
-        for title in ("Rotate next", "Switch best", "Next available"):
-            self.assertFalse(by_title[title].isEnabled())
+        for title in ("Best", "Next", "Rotate"):
+            self.assertNotIn(title, self._titles(host))
 
         host.content.renderModel_screen_(base, "main")
-        by_title = {str(button.title()): button for button in buttons(host.content.view())}
-        for title in ("Rotate next", "Switch best", "Next available"):
-            self.assertTrue(by_title[title].isEnabled())
+        for title in ("Best", "Next", "Rotate"):
+            self.assertIn(title, self._titles(host))
+
+    def test_message_replaces_the_title_without_moving_the_list(self) -> None:
+        import AppKit
+
+        model = _model(2)
+        _application, host = self._host(model)
+        host.content.renderModel_screen_(model, "main")
+        before = host.content.view().frame().size.height
+        host.controller.view_model = model
+
+        host._message("Couldn't launch isolated session", "Terminal access was denied.")
+        fields = [
+            str(child.stringValue())
+            for child in host.content.view().subviews()
+            if isinstance(child, AppKit.NSTextField)
+        ]
+        self.assertTrue(any(text.startswith("Couldn't launch isolated session:") for text in fields))
+        self.assertNotIn("Claude accounts", fields)
+        self.assertEqual(host.content.view().frame().size.height, before)
+
+        host.popoverDidClose_(None)
+        self.assertEqual(host.last_message, "")
 
     def test_native_popover_constructs_fixed_chrome_and_flipped_accounts_document(self) -> None:
-        """The main screen keeps only account groups inside its scroll view."""
+        """The main screen keeps only account rows inside its scroll view."""
 
         import AppKit
 
-        application, host = self._host(_model(2, rows_per_account=3))
-        host.content.renderModel_screen_(_model(2, rows_per_account=3), "main")
-        try:
-            root = host.content.view()
-            self.assertLess(root.frame().size.height, POPOVER_MAX_HEIGHT)
-            self.assertEqual(host.popover.contentSize().height, root.frame().size.height)
-            scrolls = [
-                child
-                for child in root.subviews()
-                if isinstance(child, AppKit.NSScrollView) and child.identifier() == "accounts"
-            ]
-            self.assertTrue(root.isFlipped())
-            self.assertEqual(len(scrolls), 1)
-            accounts_scroll = scrolls[0]
-            document = accounts_scroll.documentView()
-            self.assertTrue(document.isFlipped())
-            self.assertEqual(accounts_scroll.documentVisibleRect().origin.y, 0.0)
+        model = _model(2, rows_per_account=2)
+        _application, host = self._host(model)
+        host.content.renderModel_screen_(model, "main")
+        root = host.content.view()
+        self.assertLess(root.frame().size.height, POPOVER_MAX_HEIGHT)
+        self.assertEqual(host.popover.contentSize().height, root.frame().size.height)
+        scrolls = [child for child in root.subviews() if isinstance(child, AppKit.NSScrollView)]
+        self.assertEqual(len(scrolls), 1)
+        accounts_scroll = scrolls[0]
+        self.assertEqual(accounts_scroll.identifier(), "accounts")
+        document = accounts_scroll.documentView()
+        self.assertTrue(document.isFlipped())
 
-            header = next(
-                child
-                for child in root.subviews()
-                if isinstance(child, AppKit.NSTextField) and str(child.stringValue()) == "CLAUDE SWAP / CAPACITY"
-            )
-            self.assertIs(header.superview(), root)
-            self.assertLessEqual(header.frame().origin.y + header.frame().size.height, accounts_scroll.frame().origin.y)
+        root_buttons = [child for child in root.subviews() if isinstance(child, AppKit.NSButton)]
+        self.assertEqual(
+            {str(button.action()) for button in root_buttons},
+            {
+                "refreshNow:",
+                "showSettings:",
+                "showOverflow:",
+                "switchBest:",
+                "nextAvailable:",
+                "rotateNext:",
+            },
+        )
+        self.assertTrue(all(not _intersects(accounts_scroll.frame(), button.frame()) for button in root_buttons))
 
-            root_buttons = [child for child in root.subviews() if isinstance(child, AppKit.NSButton)]
-            self.assertEqual(
-                {str(button.title()) for button in root_buttons},
-                {"Rotate next", "Switch best", "Next available", "Refresh", "More…", "Settings"},
-            )
-            self.assertTrue(all(button.superview() is root for button in root_buttons))
-            self.assertTrue(
-                all(button.frame().origin.y >= accounts_scroll.frame().origin.y + accounts_scroll.frame().size.height for button in root_buttons)
-            )
-            self.assertTrue(
-                all(not _intersects(accounts_scroll.frame(), button.frame()) for button in root_buttons)
-            )
+        rows = tuple(document.subviews())
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(row.isFlipped() for row in rows))
+        self.assertFalse(_intersects(rows[0].frame(), rows[1].frame()))
 
-            groups = tuple(document.subviews())
-            self.assertEqual(len(groups), 2)
-            self.assertTrue(all(group.isFlipped() for group in groups))
-            self.assertFalse(_intersects(groups[0].frame(), groups[1].frame()))
-            titles = self._button_titles(document)
-            self.assertEqual(titles.count("Make active"), 1)
-            self.assertEqual(titles.count("Active"), 1)
-            self.assertEqual(titles.count("Session"), 1)
-            self.assertEqual(titles.count("Default profile"), 1)
-            for group in groups:
-                action_buttons = [
-                    child
-                    for child in group.subviews()
-                    if isinstance(child, AppKit.NSButton)
-                    and str(child.title()) in {"Active", "Make active", "Session", "Default profile"}
-                ]
-                self.assertEqual(len(action_buttons), 2)
-                self.assertTrue(all(button.frame().size.width >= 150.0 for button in action_buttons))
-            default_button = next(
-                button
-                for button in groups[0].subviews()
-                if isinstance(button, AppKit.NSButton) and str(button.title()) == "Default profile"
-            )
-            self.assertFalse(default_button.isEnabled())
-            active_button = next(
-                button
-                for button in groups[0].subviews()
-                if isinstance(button, AppKit.NSButton) and str(button.title()) == "Active"
-            )
-            self.assertFalse(active_button.isEnabled())
-            make_active_button = next(
-                button
-                for button in groups[1].subviews()
-                if isinstance(button, AppKit.NSButton) and str(button.title()) == "Make active"
-            )
-            self.assertTrue(make_active_button.isEnabled())
+    def test_active_row_has_no_session_button_and_others_do(self) -> None:
+        model = _model(2)
+        _application, host = self._host(model)
+        host.content.renderModel_screen_(model, "main")
+        active_row, other_row = self._accounts_document(host).subviews()
 
-            # One click: the button goes straight to the controller, no alert.
-            with (
-                patch.object(host, "_confirm", side_effect=AssertionError("must not confirm")),
-                patch.object(host.controller, "make_active", create=True) as make_active,
-            ):
-                make_active_button.performClick_(None)
-            make_active.assert_called_once_with("2")
+        self.assertEqual(self._button_titles(active_row), [])
+        self.assertEqual(self._button_titles(other_row), [""])
 
-            host._message("Couldn't launch isolated session", "Terminal access was denied.")
-            feedback = next(
-                child
-                for child in host.content.view().subviews()
-                if isinstance(child, AppKit.NSTextField)
-                and str(child.stringValue()).startswith("Couldn't launch isolated session:")
-            )
-            self.assertIs(feedback.superview(), host.content.view())
-        finally:
-            pass
+    def test_every_secondary_screen_renders_within_the_popover_width(self) -> None:
+        import AppKit
+
+        model = _model(3)
+        _application, host = self._host(model)
+        host.controller.history = ["a to b"]
+        for screen in ("overflow", "settings", "history"):
+            host.content.renderModel_screen_(model, screen)
+            document = next(
+                child for child in host.content.view().subviews() if isinstance(child, AppKit.NSScrollView)
+            ).documentView()
+            for child in document.subviews():
+                frame = child.frame()
+                self.assertGreaterEqual(frame.origin.x, 0.0)
+                self.assertLessEqual(frame.origin.x + frame.size.width, POPOVER_WIDTH)
 
     def test_long_account_list_scrolls_only_the_flipped_account_document(self) -> None:
         import AppKit

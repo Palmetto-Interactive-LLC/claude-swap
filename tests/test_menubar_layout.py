@@ -6,9 +6,13 @@ import pytest
 
 from claude_swap.menubar_layout import (
     BUTTON_HEIGHT,
+    MAX_USAGE_CELLS,
     MainPopoverLayout,
     POPOVER_MAX_HEIGHT,
+    POPOVER_WIDTH,
+    ROW_HEIGHT,
     Rect,
+    button_row,
     plan_main_popover,
     plan_scroll_screen,
 )
@@ -21,17 +25,32 @@ def _assert_disjoint(frames: tuple[Rect, ...]) -> None:
 
 
 def _assert_main_chrome(layout: MainPopoverLayout) -> None:
-    _assert_disjoint((layout.header, layout.accounts_viewport, layout.footer))
     assert layout.accounts_viewport.y == layout.header.max_y
-    assert layout.footer.y == layout.accounts_viewport.max_y
     assert layout.accounts_document_height >= layout.accounts_viewport.height
+    if layout.footer is not None:
+        assert layout.footer.y == layout.accounts_viewport.max_y
+        assert layout.root.height == layout.footer.max_y
+    else:
+        assert layout.root.height == layout.accounts_viewport.max_y
 
 
-def _assert_contained(child: Rect, parent: Rect) -> None:
-    assert parent.x <= child.x
-    assert parent.y <= child.y
-    assert child.max_x <= parent.max_x
-    assert child.max_y <= parent.max_y
+def _assert_contained(child: Rect, width: float, height: float) -> None:
+    assert 0 <= child.x
+    assert 0 <= child.y
+    assert child.max_x <= width
+    assert child.max_y <= height
+
+
+def test_popover_is_well_under_half_the_original_430_by_620_area() -> None:
+    assert POPOVER_WIDTH * POPOVER_MAX_HEIGHT <= 0.5 * 430.0 * 620.0
+
+
+def test_six_accounts_fit_without_scrolling() -> None:
+    layout = plan_main_popover((2,) * 6)
+
+    _assert_main_chrome(layout)
+    assert layout.accounts_document_height == layout.accounts_viewport.height
+    assert layout.root.height <= POPOVER_MAX_HEIGHT
 
 
 def test_main_layout_handles_no_accounts_without_a_tall_artificial_document() -> None:
@@ -39,86 +58,86 @@ def test_main_layout_handles_no_accounts_without_a_tall_artificial_document() ->
 
     _assert_main_chrome(layout)
     assert layout.accounts == ()
-    assert layout.root.height == 190.0
     assert layout.root.height < POPOVER_MAX_HEIGHT
     assert layout.accounts_document_height == layout.accounts_viewport.height == 48.0
 
 
-def test_main_layout_places_one_account_actions_below_its_usage_rows() -> None:
-    layout = plan_main_popover((3,))
-    account = layout.accounts[0]
+@pytest.mark.parametrize("cells", range(MAX_USAGE_CELLS + 1))
+def test_row_children_stay_inside_the_row(cells: int) -> None:
+    row = plan_main_popover((cells,)).accounts[0]
 
-    _assert_main_chrome(layout)
-    assert account.usage_rows[-1].max_y <= account.make_active.y
-    assert account.usage_rows[-1].max_y <= account.session.y
-    assert account.make_active.height == BUTTON_HEIGHT
-    assert account.make_active.width >= 150
-    assert account.session.width >= 150
-    assert account.frame.y >= 0
-    assert account.frame.max_y <= layout.accounts_document_height
-
-
-def test_main_layout_keeps_two_accounts_non_overlapping() -> None:
-    layout = plan_main_popover((0, 2))
-    first, second = layout.accounts
-
-    _assert_main_chrome(layout)
-    assert first.frame.max_y < second.frame.y
-    assert layout.root.height < POPOVER_MAX_HEIGHT
-    assert layout.accounts_document_height == layout.accounts_viewport.height
-    assert second.frame.max_y + 14.0 == layout.accounts_document_height
-    for account in (first, second):
-        children = (
-            account.title,
-            account.capacity,
-            account.email,
-            account.freshness,
-            *account.usage_rows,
-            account.make_active,
-            account.session,
-        )
-        _assert_disjoint(children)
-        for child in children:
-            _assert_contained(child, account.frame)
+    assert row.frame.height == ROW_HEIGHT
+    assert len(row.usage_cells) == cells
+    assert row.frame.width + 2 * row.frame.x == POPOVER_WIDTH
+    for child in (row.avatar, row.name, row.status, row.detail, row.session_button, row.login_button):
+        _assert_contained(child, row.frame.width, row.frame.height)
+    meters = tuple(frame for cell in row.usage_cells for frame in (cell.text, cell.bar))
+    for frame in meters:
+        _assert_contained(frame, row.frame.width, row.frame.height)
+    _assert_disjoint((row.avatar, row.name, row.status))
+    _assert_disjoint((*meters, row.avatar, row.session_button, row.name))
 
 
-def test_main_layout_grows_only_the_accounts_document_for_long_mixed_lists() -> None:
-    layout = plan_main_popover((0, 1, 4, 2, 5, 3, 0, 6, 1, 4))
+def test_rows_do_not_overlap_and_only_the_list_grows_for_long_lists() -> None:
+    layout = plan_main_popover((3, 0, 2, 1) * 5)
 
     _assert_main_chrome(layout)
     assert layout.root.height == POPOVER_MAX_HEIGHT
     assert layout.accounts_document_height > layout.accounts_viewport.height
-    assert all(
-        account.frame.max_y <= layout.accounts_document_height for account in layout.accounts
-    )
-    _assert_disjoint(tuple(account.frame for account in layout.accounts))
-    assert layout.accounts[0].frame.y == 14.0
-    assert layout.accounts[-1].frame.max_y + 14.0 == layout.accounts_document_height
+    _assert_disjoint(tuple(row.frame for row in layout.accounts))
+    assert all(row.frame.max_y <= layout.accounts_document_height for row in layout.accounts)
 
 
-def test_main_layout_has_exactly_two_compact_footer_rows_with_readable_titles_space() -> None:
+def test_footer_has_one_row_of_three_and_can_be_left_out() -> None:
+    with_footer = plan_main_popover((1,))
+    frames = (with_footer.switch_best, with_footer.next_available, with_footer.rotate_next)
+
+    assert {frame.y for frame in frames} == {with_footer.footer.y + 8.0}
+    _assert_disjoint(frames)
+    assert all(frame.max_y <= with_footer.footer.max_y for frame in frames)
+
+    without = plan_main_popover((1,), has_footer=False)
+    _assert_main_chrome(without)
+    assert without.footer is None
+    assert without.switch_best is None
+    assert without.root.height < with_footer.root.height
+
+
+def test_header_controls_do_not_overlap_the_title_or_message() -> None:
     layout = plan_main_popover((1,))
-    first_row = (layout.rotate_next, layout.switch_best, layout.next_available)
-    second_row = (layout.refresh, layout.more, layout.settings)
 
-    assert {frame.y for frame in first_row} != {frame.y for frame in second_row}
-    assert all(frame.width >= 120 for frame in (*first_row, *second_row))
-    _assert_disjoint((*first_row, *second_row))
-    assert all(layout.footer.y <= frame.y and frame.max_y <= layout.footer.max_y for frame in (*first_row, *second_row))
+    _assert_disjoint((layout.title, layout.refresh, layout.settings, layout.more))
+    _assert_disjoint((layout.message, layout.refresh, layout.settings, layout.more))
+    assert layout.message.max_y <= layout.header.max_y
 
 
-def test_secondary_scroll_planner_stays_top_down_for_long_content() -> None:
-    layout = plan_scroll_screen((22.0,) * 50)
+def test_button_row_divides_a_frame_evenly() -> None:
+    first, second = button_row(Rect(10.0, 20.0, 106.0, BUTTON_HEIGHT), 2)
 
-    assert layout.title.y == 14.0
-    assert layout.subtitle.y > layout.title.y
-    assert layout.items[0].y > layout.subtitle.max_y
-    assert all(item.y >= 0 for item in layout.items)
-    assert layout.items[-1].max_y + 14.0 == layout.document_height
-    assert layout.document_height > layout.viewport.height
+    assert first.width == second.width == 50.0
+    assert second.max_x == 116.0
+    assert first.y == second.y == 20.0
 
 
-@pytest.mark.parametrize("planner, values", [(plan_main_popover, (-1,)), (plan_scroll_screen, (0.0,))])
+def test_secondary_screen_fits_short_content_and_scrolls_long_content() -> None:
+    short = plan_scroll_screen((22.0,))
+    assert short.viewport.height == short.document_height < POPOVER_MAX_HEIGHT
+
+    long = plan_scroll_screen((22.0,) * 50)
+    assert long.items[0].y >= long.title.max_y
+    assert all(item.y >= 0 for item in long.items)
+    assert long.viewport.height == POPOVER_MAX_HEIGHT
+    assert long.document_height > long.viewport.height
+
+
+@pytest.mark.parametrize(
+    "planner, values",
+    [
+        (plan_main_popover, (-1,)),
+        (plan_main_popover, (MAX_USAGE_CELLS + 1,)),
+        (plan_scroll_screen, (0.0,)),
+    ],
+)
 def test_planners_reject_invalid_item_sizes(planner, values) -> None:
     with pytest.raises(ValueError):
         planner(values)
