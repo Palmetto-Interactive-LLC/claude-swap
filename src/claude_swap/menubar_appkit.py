@@ -11,6 +11,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from claude_swap.exceptions import ClaudeSwitchError
+from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
 from claude_swap.menubar_layout import (
     BUTTON_HEIGHT,
     POPOVER_MAX_HEIGHT,
@@ -182,13 +183,20 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
             )
             for row, frame in zip(account.rows, layout.usage_rows, strict=True):
                 self._usage_row(row, self._local(frame, layout.frame), group)
+            # Switching takes one click, so nothing else stands between a stray
+            # click and replacing a working login with a dead refresh token.
+            needs_login = account.sentinel == USAGE_RELOGIN_REQUIRED
             make_active = self._button(
-                "Active" if account.is_active else "Make active",
+                "Active"
+                if account.is_active
+                else "Re-login needed"
+                if needs_login
+                else "Make active",
                 "makeActive:",
                 self._local(layout.make_active, layout.frame),
                 slot=account.number,
             )
-            make_active.setEnabled_(not account.is_active)
+            make_active.setEnabled_(not account.is_active and not needs_login)
             group.addSubview_(make_active)
             if account.session_available:
                 session_button = self._button(

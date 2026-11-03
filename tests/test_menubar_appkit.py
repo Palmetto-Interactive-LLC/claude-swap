@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 from claude_swap import menubar_appkit
+from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
 from claude_swap.menubar_layout import POPOVER_MAX_HEIGHT
 from claude_swap.menubar_viewmodel import (
     CapacityState,
@@ -123,6 +125,31 @@ class NativeMenuBarAppKitSmokeTests(unittest.TestCase):
         finally:
             status_bar.removeStatusItem_(item)
         self.assertIsNotNone(application)
+
+    def test_account_needing_relogin_cannot_be_made_active(self) -> None:
+        """One-click switching must not put a dead refresh token in the live login."""
+        import AppKit
+
+        base = _model(2)
+        dead = replace(base.accounts[1], sentinel=USAGE_RELOGIN_REQUIRED)
+        model = replace(base, accounts=(base.accounts[0], dead))
+        _application, host = self._host(model)
+        host.screen = "main"
+        host.content.renderModel_screen_(model, "main")
+
+        def buttons(view):
+            found = []
+            for child in view.subviews():
+                if isinstance(child, AppKit.NSButton):
+                    found.append(child)
+                found.extend(buttons(child))
+            return found
+
+        by_title = {str(button.title()): button for button in buttons(host.content.view())}
+        self.assertNotIn("Make active", by_title)
+        self.assertFalse(by_title["Re-login needed"].isEnabled())
+        # An isolated session is the way to log back in, so it stays available.
+        self.assertTrue(by_title["Session"].isEnabled())
 
     def test_native_popover_constructs_fixed_chrome_and_flipped_accounts_document(self) -> None:
         """The main screen keeps only account groups inside its scroll view."""
