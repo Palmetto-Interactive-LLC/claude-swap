@@ -61,7 +61,7 @@ def test_build_plist_is_parseable_and_runs_the_menubar_subcommand(tmp_path):
 def test_build_plist_keepalive_restarts_a_crash_but_respects_a_quit(tmp_path):
     """A bare `KeepAlive: True` would make the menu bar's Quit item a no-op.
 
-    menubar.py's quit handler calls rumps.quit_application() — a clean exit(0)
+    The menu bar's quit handler calls NSApplication.terminate_() — a clean exit(0)
     — so unconditional KeepAlive relaunches it immediately and the user has no
     way to stop the menu bar short of `launchctl bootout`.
     """

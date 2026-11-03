@@ -155,7 +155,7 @@ def build_plist(
             "ProgramArguments": [*program, "menubar"],
             "RunAtLoad": True,
             # Restart a crash, but respect a deliberate Quit. The menu bar's
-            # quit handler calls rumps.quit_application(), a clean exit(0);
+            # quit handler calls NSApplication.terminate_(), a clean exit(0);
             # under a bare `KeepAlive: True` launchd would relaunch it at once
             # and the Quit item would do nothing the user can see.
             "KeepAlive": {"SuccessfulExit": False},
