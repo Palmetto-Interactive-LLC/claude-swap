@@ -79,8 +79,8 @@ def require_appkit() -> None:
     """Raise the CLI-facing error when the optional native runtime is absent."""
     if not APPKIT_AVAILABLE:
         raise ClaudeSwitchError(
-            "Menu bar mode requires PyObjC/AppKit. Install with: pip install "
-            "'claude-swap[menubar]'"
+            "Menu bar mode requires PyObjC/AppKit. Install it with this fork's script: "
+            "https://github.com/bballer320xu/claude-swap#macos-with-the-menu-bar-app"
         )
 
 
