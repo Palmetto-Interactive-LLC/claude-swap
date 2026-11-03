@@ -206,7 +206,7 @@ def test_capacity_summary_does_not_report_room_on_an_expired_login():
         viewmodel._capacity_summary(
             (row,), None, _NOW, sentinel=viewmodel.USAGE_RELOGIN_REQUIRED
         )
-        == "Login expired"
+        == "Signed out"
     )
 
 
@@ -254,7 +254,7 @@ def test_expired_login_shows_no_meters_and_cannot_be_activated():
 
     assert viewmodel.compact_usage_rows(expired) == ()
     assert not viewmodel.account_can_activate(expired)
-    assert viewmodel.account_status_text(expired) == "Login expired"
+    assert viewmodel.account_status_text(expired) == "Signed out"
 
 
 def test_status_text_and_activation_follow_account_state():

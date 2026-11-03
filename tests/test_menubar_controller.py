@@ -453,3 +453,153 @@ def test_load_history_renders_updated_history_on_main_dispatch(tmp_path: Path) -
     assert controller.history
     assert rendered_history == [controller.history]
     controller.stop()
+
+
+class _SignInSwitcher(_Switcher):
+    """Records the store writes a sign-in may make."""
+
+    def __init__(self, backup_dir: Path) -> None:
+        super().__init__(backup_dir)
+        self.writes: list[tuple[str, str, str]] = []
+        self.cleared: list[list[str]] = []
+        self._usage_store = self
+
+    def resolve_account(self, slot: str) -> tuple[str, str, str]:
+        return slot, "two@example.test", "org-2"
+
+    def _write_account_credentials(self, number: str, email: str, credentials: str) -> None:
+        self.writes.append((number, email, credentials))
+
+    def clear_dead_token(self, nums: list[str], _identities: dict) -> None:
+        self.cleared.append(list(nums))
+
+
+def _signed_in(identity, credentials="new-login", exit_code=0):
+    def run(login_dir: Path, _email: str, _on_start) -> int:
+        assert login_dir.is_dir()
+        return exit_code
+
+    return run, patch.multiple(
+        "claude_swap.menubar_controller",
+        read_session_identity=lambda _path: identity,
+        read_session_credentials=lambda _path: credentials,
+    )
+
+
+def _sign_in(tmp_path: Path, runner) -> tuple[_SignInSwitcher, list[tuple[str, str]]]:
+    switcher = _SignInSwitcher(tmp_path)
+    messages: list[tuple[str, str]] = []
+    finished = threading.Event()
+
+    def message(title: str, text: str) -> None:
+        messages.append((title, text))
+        finished.set()
+
+    controller = MenuBarController(
+        switcher, snapshot_source=_SnapshotSource(_snapshot()), login_runner=runner
+    )
+    controller.bind_ui(lambda _model, _title: None, message)
+    controller.sign_in_and_activate("2")
+    _wait_for(finished)
+    _wait_until(lambda: not controller._logins)
+    controller.stop()
+    return switcher, messages
+
+
+def test_sign_in_stores_the_login_clears_the_strike_and_switches(tmp_path: Path) -> None:
+    runner, reads = _signed_in(("Two@Example.test", "org-2"))
+    with reads:
+        switcher, messages = _sign_in(tmp_path, runner)
+
+    assert switcher.writes == [("2", "two@example.test", "new-login")]
+    assert switcher.cleared == [["2"]]
+    assert switcher.calls == [("switch_to", "2", True)]
+    assert messages[0][0] == "Account switched"
+    assert not (tmp_path / "logins" / "2").exists()
+
+
+def test_sign_in_as_another_account_changes_nothing(tmp_path: Path) -> None:
+    runner, reads = _signed_in(("other@example.test", "org-2"))
+    with reads:
+        switcher, messages = _sign_in(tmp_path, runner)
+
+    assert switcher.writes == []
+    assert switcher.calls == []
+    assert messages == [
+        ("Couldn't sign in", "You signed in as other@example.test, not two@example.test. Try again.")
+    ]
+    assert not (tmp_path / "logins" / "2").exists()
+
+
+def test_sign_in_with_another_organization_changes_nothing(tmp_path: Path) -> None:
+    runner, reads = _signed_in(("two@example.test", "org-other"))
+    with reads:
+        switcher, messages = _sign_in(tmp_path, runner)
+
+    assert switcher.writes == []
+    assert switcher.calls == []
+    assert messages[0][0] == "Couldn't sign in"
+
+
+def test_abandoned_sign_in_changes_nothing(tmp_path: Path) -> None:
+    runner, reads = _signed_in(("two@example.test", "org-2"), exit_code=1)
+    with reads:
+        switcher, messages = _sign_in(tmp_path, runner)
+
+    assert switcher.writes == []
+    assert switcher.calls == []
+    assert messages == [("Couldn't sign in", "Sign-in didn't finish. Click the account to try again.")]
+    assert not (tmp_path / "logins" / "2").exists()
+
+
+def test_a_second_click_does_not_start_a_second_sign_in(tmp_path: Path) -> None:
+    switcher = _SignInSwitcher(tmp_path)
+    started = threading.Event()
+    release = threading.Event()
+    runs: list[str] = []
+
+    def runner(_login_dir: Path, email: str, _on_start) -> int:
+        runs.append(email)
+        started.set()
+        release.wait(2)
+        return 1
+
+    controller = MenuBarController(
+        switcher, snapshot_source=_SnapshotSource(_snapshot()), login_runner=runner
+    )
+    controller.bind_ui(lambda _model, _title: None, lambda _title, _message: None)
+    controller.sign_in_and_activate("2")
+    _wait_for(started)
+    controller.sign_in_and_activate("2")
+    release.set()
+    _wait_until(lambda: not controller._logins)
+    controller.stop()
+
+    assert runs == ["two@example.test"]
+
+
+def test_quitting_stops_a_waiting_sign_in(tmp_path: Path) -> None:
+    switcher = _SignInSwitcher(tmp_path)
+    tracked = threading.Event()
+    terminated = threading.Event()
+
+    class _Process:
+        def terminate(self) -> None:
+            terminated.set()
+
+    def runner(_login_dir: Path, _email: str, on_start) -> int:
+        on_start(_Process())
+        tracked.set()
+        terminated.wait(2)
+        return 1
+
+    controller = MenuBarController(
+        switcher, snapshot_source=_SnapshotSource(_snapshot()), login_runner=runner
+    )
+    controller.bind_ui(lambda _model, _title: None, lambda _title, _message: None)
+    controller.sign_in_and_activate("2")
+    _wait_for(tracked)
+    controller.stop()
+
+    assert terminated.is_set()
+    _wait_until(lambda: not controller._logins)

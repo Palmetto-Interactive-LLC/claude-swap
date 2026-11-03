@@ -573,7 +573,7 @@ def _capacity_summary(
     """
     if sentinel == USAGE_RELOGIN_REQUIRED:
         # A dead token's last-known windows say nothing about what it can do now.
-        return "Login expired"
+        return "Signed out"
     if isinstance(rejected, dict):
         countdown = _live_countdown(rejected, time.time() if now is None else now)
         return f"Rejected {countdown}" if countdown else "Rejected"
@@ -637,10 +637,10 @@ def account_login_expired(account: PopoverAccountViewModel) -> bool:
 
 
 def account_can_activate(account: PopoverAccountViewModel) -> bool:
-    """Whether one click may make this the live login.
+    """Whether this account can become the live login without signing in first.
 
-    Switching has no confirmation, so nothing else stands between a stray click
-    and replacing a working login with a dead refresh token.
+    Rotation has no confirmation, so nothing else stands between a click and
+    replacing a working login with a dead refresh token.
     """
     return not account.is_active and not account_login_expired(account)
 
@@ -650,7 +650,7 @@ def account_status_text(account: PopoverAccountViewModel) -> str:
     if account.is_active:
         return "Active"
     if account_login_expired(account):
-        return "Login expired"
+        return "Signed out"
     if account.disabled:
         return "Disabled"
     return account.capacity_summary

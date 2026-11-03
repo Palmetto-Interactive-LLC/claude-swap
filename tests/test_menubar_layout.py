@@ -45,6 +45,12 @@ def test_popover_is_well_under_half_the_original_430_by_620_area() -> None:
     assert POPOVER_WIDTH * POPOVER_MAX_HEIGHT <= 0.5 * 430.0 * 620.0
 
 
+def test_a_typical_long_email_gets_the_full_name_column() -> None:
+    row = plan_main_popover((2,)).accounts[0]
+
+    assert row.name.width >= 200.0
+
+
 def test_six_accounts_fit_without_scrolling() -> None:
     layout = plan_main_popover((2,) * 6)
 
@@ -69,7 +75,7 @@ def test_row_children_stay_inside_the_row(cells: int) -> None:
     assert row.frame.height == ROW_HEIGHT
     assert len(row.usage_cells) == cells
     assert row.frame.width + 2 * row.frame.x == POPOVER_WIDTH
-    for child in (row.avatar, row.name, row.status, row.detail, row.session_button, row.login_button):
+    for child in (row.avatar, row.name, row.status, row.detail, row.session_button):
         _assert_contained(child, row.frame.width, row.frame.height)
     meters = tuple(frame for cell in row.usage_cells for frame in (cell.text, cell.bar))
     for frame in meters:

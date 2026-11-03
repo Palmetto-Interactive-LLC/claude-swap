@@ -191,8 +191,8 @@ class NativeMenuBarAppKitSmokeTests(unittest.TestCase):
         )
         self.assertEqual(other_row.hitTest_(button_point), session)
 
-    def test_expired_account_offers_log_in_and_cannot_be_activated(self) -> None:
-        """One-click switching must not put a dead refresh token in the live login."""
+    def test_clicking_a_signed_out_row_signs_in_and_never_activates_the_dead_login(self) -> None:
+        """A dead refresh token must never reach the live login directly."""
         base = _model(3)
         dead = replace(base.accounts[1], sentinel=USAGE_RELOGIN_REQUIRED)
         model = replace(base, accounts=(base.accounts[0], dead, base.accounts[2]))
@@ -201,11 +201,16 @@ class NativeMenuBarAppKitSmokeTests(unittest.TestCase):
         host.content.renderModel_screen_(model, "main")
 
         dead_row = self._accounts_document(host).subviews()[1]
-        with patch.object(host.controller, "make_active", create=True) as make_active:
+        self.assertEqual(self._button_titles(dead_row), [])
+        with (
+            patch.object(host.controller, "make_active", create=True) as make_active,
+            patch.object(host.controller, "sign_in_and_activate", create=True) as sign_in,
+        ):
             dead_row.activate()
-            host.activate_slot("2")
         make_active.assert_not_called()
-        self.assertEqual(self._button_titles(dead_row), ["Log in"])
+        sign_in.assert_called_once_with("2")
+        self.assertEqual(host.last_message, "Sign in as account-2@example.test in your browser")
+        host.last_message = ""
 
     def test_rotation_buttons_are_hidden_with_nothing_alive_to_move_to(self) -> None:
         base = _model(2)

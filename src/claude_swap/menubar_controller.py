@@ -9,6 +9,8 @@ account metadata itself: coherent account state arrives only from
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 import subprocess
 import threading
 from collections.abc import Callable
@@ -18,7 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from claude_swap.autoswitch import AutoSwitchEngine, AutoSwitchEvent
-from claude_swap.exceptions import CredentialReadError
+from claude_swap.exceptions import ClaudeSwitchError, CredentialReadError
 from claude_swap.macos_terminal import TerminalLaunchResult, launch_terminal
 from claude_swap.models import AccountsSnapshot
 from claude_swap.menubar_viewmodel import (
@@ -29,6 +31,12 @@ from claude_swap.menubar_viewmodel import (
     format_usage_log,
     parse_switch_history,
     popover_view_model,
+)
+from claude_swap.session import (
+    AUTH_OVERRIDE_ENV_VARS,
+    delete_macos_keychain_entry,
+    read_session_credentials,
+    read_session_identity,
 )
 from claude_swap.settings import load_settings, set_setting
 from claude_swap.snapshot_source import SnapshotSource
@@ -43,6 +51,10 @@ MainDispatcher = Callable[[Callable[[], None]], None]
 TerminalLauncher = Callable[[str], TerminalLaunchResult]
 RevealLog = Callable[[Path], None]
 ConfigSignature = tuple[Path, int | None, int | None, int | None]
+LoginRunner = Callable[[Path, str, Callable[[subprocess.Popen], None]], int]
+
+# Long enough to find a password, short enough not to wait on an abandoned tab.
+LOGIN_TIMEOUT_S = 300.0
 
 
 @dataclass(frozen=True)
@@ -51,6 +63,31 @@ class ActiveAccountProbe:
 
     config_changed: bool
     identity: tuple[str, str] | None = None
+
+
+def _run_claude_login(
+    login_dir: Path, email: str, on_start: Callable[[subprocess.Popen], None]
+) -> int:
+    """Run Claude Code's browser sign-in against ``login_dir``; return its exit code."""
+    claude = shutil.which("claude")
+    if claude is None:
+        raise ClaudeSwitchError("'claude' was not found on PATH. Install Claude Code first.")
+    env = {key: value for key, value in os.environ.items() if key not in AUTH_OVERRIDE_ENV_VARS}
+    env["CLAUDE_CONFIG_DIR"] = str(login_dir)
+    process = subprocess.Popen(
+        [claude, "auth", "login", "--email", email],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    on_start(process)
+    try:
+        return process.wait(timeout=LOGIN_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        process.terminate()
+        process.wait()
+        raise ClaudeSwitchError("Sign-in timed out. Click the account to try again.") from None
 
 
 def _run_reveal_log(path: Path) -> None:
@@ -77,6 +114,7 @@ class MenuBarController:
         snapshot_source: SnapshotSource | None = None,
         terminal_launcher: TerminalLauncher = launch_terminal,
         reveal_log: RevealLog = _run_reveal_log,
+        login_runner: LoginRunner = _run_claude_login,
         dispatch_main: MainDispatcher | None = None,
         executor: Executor | None = None,
     ) -> None:
@@ -90,6 +128,9 @@ class MenuBarController:
         self.snapshot_source = snapshot_source or SnapshotSource(switcher)
         self.terminal_launcher = terminal_launcher
         self.reveal_log = reveal_log
+        self.login_runner = login_runner
+        self._logins: set[str] = set()
+        self._login_processes: set[subprocess.Popen] = set()
         self._dispatch_main = dispatch_main or (lambda callback: callback())
         self._executor = executor or ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="claude-swap-menubar"
@@ -167,8 +208,11 @@ class MenuBarController:
             self._engine = None
             self._engine_restart_requested = False
             engines = tuple(self._engine_threads)
+            login_processes = tuple(self._login_processes)
         for engine in engines:
             engine.stop()
+        for process in login_processes:
+            process.terminate()
         if self._owns_executor and isinstance(self._executor, ThreadPoolExecutor):
             self._executor.shutdown(wait=False, cancel_futures=True)
         self._notify_when_idle()
@@ -195,6 +239,86 @@ class MenuBarController:
     def make_active(self, slot: str) -> None:
         """Explicitly activate a selected slot using only ``switch_to``."""
         self._submit(lambda: self.switcher.switch_to(slot, json_output=True), self._switch_failed)
+
+    def sign_in_and_activate(self, slot: str) -> None:
+        """Sign a signed-out slot back in through the browser, then activate it.
+
+        The wait for the browser runs on its own thread: holding the serialized
+        worker for minutes would stall every refresh and action behind it.
+        """
+        with self._state_lock:
+            if self._stopped or slot in self._logins:
+                return
+            self._logins.add(slot)
+        threading.Thread(
+            target=self._sign_in_thread, args=(slot,), daemon=True, name="claude-swap-login"
+        ).start()
+
+    def _sign_in_thread(self, slot: str) -> None:
+        login_dir = self.switcher.backup_dir / "logins" / slot
+
+        def track(process: subprocess.Popen) -> None:
+            with self._state_lock:
+                self._login_processes.add(process)
+                stopped = self._stopped
+            if stopped:
+                process.terminate()
+
+        try:
+            _number, email, _org = self.switcher.resolve_account(slot)
+            self._remove_login_dir(login_dir)
+            login_dir.mkdir(parents=True, mode=0o700)
+            exit_code = self.login_runner(login_dir, email, track)
+            if exit_code != 0:
+                raise ClaudeSwitchError("Sign-in didn't finish. Click the account to try again.")
+        except BaseException as error:
+            self._remove_login_dir(login_dir)
+            self._login_finished(slot)
+            self._dispatch_main(lambda: self._sign_in_failed(error))
+            return
+        finally:
+            with self._state_lock:
+                self._login_processes.clear()
+
+        def finish() -> dict | None:
+            try:
+                return self._activate_signed_in_slot(slot, login_dir)
+            finally:
+                self._remove_login_dir(login_dir)
+                self._login_finished(slot)
+
+        if self._submit(finish, self._sign_in_failed) is None:
+            self._remove_login_dir(login_dir)
+            self._login_finished(slot)
+
+    def _activate_signed_in_slot(self, slot: str, login_dir: Path) -> dict | None:
+        """Store the new login in the slot and switch to it, or change nothing."""
+        number, email, org_uuid = self.switcher.resolve_account(slot)
+        identity = read_session_identity(login_dir)
+        credentials = read_session_credentials(login_dir)
+        if identity is None or not credentials:
+            raise ClaudeSwitchError("Sign-in finished, but no login was saved. Try again.")
+        if identity[0].casefold() != email.casefold():
+            raise ClaudeSwitchError(f"You signed in as {identity[0]}, not {email}. Try again.")
+        if org_uuid and identity[1] and identity[1] != org_uuid:
+            raise ClaudeSwitchError(f"That sign-in used a different organization for {email}. Try again.")
+        self.switcher._write_account_credentials(number, email, credentials)
+        self.switcher._usage_store.clear_dead_token([number], {number: (email, org_uuid or "")})
+        return self.switcher.switch_to(number, json_output=True)
+
+    def _login_finished(self, slot: str) -> None:
+        with self._state_lock:
+            self._logins.discard(slot)
+
+    @staticmethod
+    def _remove_login_dir(login_dir: Path) -> None:
+        # Keychain first: its service name is hashed from this path.
+        if login_dir.exists():
+            delete_macos_keychain_entry(login_dir)
+            shutil.rmtree(login_dir, ignore_errors=True)
+
+    def _sign_in_failed(self, error: BaseException) -> None:
+        self._notify("Couldn't sign in", str(error))
 
     def launch_isolated_session(self, slot: str) -> None:
         """Launch the local CLI session command in a separate Terminal window."""

@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
-POPOVER_WIDTH = 296.0
+POPOVER_WIDTH = 340.0
 POPOVER_MAX_HEIGHT = 360.0
 HEADER_HEIGHT = 36.0
 FOOTER_HEIGHT = 38.0
@@ -23,7 +23,6 @@ LIST_PADDING = 2.0
 BUTTON_HEIGHT = 22.0
 ICON_BUTTON_SIZE = 22.0
 AVATAR_SIZE = 24.0
-LOGIN_BUTTON_WIDTH = 50.0
 SESSION_BUTTON_WIDTH = 20.0
 MAX_USAGE_CELLS = 3
 
@@ -84,7 +83,6 @@ class AccountRowLayout:
     status: Rect
     detail: Rect
     session_button: Rect
-    login_button: Rect
     usage_cells: tuple[UsageCellLayout, ...]
 
 
@@ -172,22 +170,11 @@ def plan_main_popover(
                 avatar=Rect(_ROW_PADDING, 10.0, AVATAR_SIZE, AVATAR_SIZE),
                 name=Rect(_TEXT_X, 4.0, status_x - _TEXT_X - 4.0, 16.0),
                 status=Rect(status_x, 5.0, _STATUS_WIDTH, 14.0),
-                detail=Rect(
-                    _TEXT_X,
-                    _DETAIL_Y + 2.0,
-                    action_right - LOGIN_BUTTON_WIDTH - 6.0 - _TEXT_X,
-                    14.0,
-                ),
+                detail=Rect(_TEXT_X, _DETAIL_Y + 2.0, action_right - _TEXT_X, 14.0),
                 session_button=Rect(
                     action_right - SESSION_BUTTON_WIDTH,
                     21.0,
                     SESSION_BUTTON_WIDTH,
-                    18.0,
-                ),
-                login_button=Rect(
-                    action_right - LOGIN_BUTTON_WIDTH,
-                    21.0,
-                    LOGIN_BUTTON_WIDTH,
                     18.0,
                 ),
                 usage_cells=_usage_cells(count),

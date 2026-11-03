@@ -373,7 +373,7 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
             if account.is_active:
                 row.resting_color = AppKit.NSColor.systemGreenColor().colorWithAlphaComponent_(0.16)
                 row.fill_color = row.resting_color
-            if account_can_activate(account):
+            if not account.is_active:
                 slot = account.number
                 row.on_activate = lambda: self.host.activate_slot(slot)
             row.setToolTip_(account_tooltip(account))
@@ -408,27 +408,25 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
             for usage_row, cell in zip(usage, layout.usage_cells, strict=True):
                 self._usage_cell(usage_row, cell, row, show_reset=len(usage) <= 2)
             if not usage:
-                detail = account.sentinel_note if account.sentinel and not expired else account.freshness_detail
+                if expired:
+                    detail = "Click to sign in and switch"
+                elif account.sentinel:
+                    detail = account.sentinel_note or account.sentinel
+                else:
+                    detail = account.freshness_detail
                 row.addSubview_(
                     self._label(detail, layout.detail, size=10.0, color=AppKit.NSColor.tertiaryLabelColor())
                 )
-            if account.session_available:
-                if expired:
-                    login = self._button("Log in", "isolatedSession:", layout.login_button, slot=account.number)
-                    login.setControlSize_(AppKit.NSControlSizeMini)
-                    login.setFont_(AppKit.NSFont.systemFontOfSize_(10.0))
-                    login.setToolTip_("Open a Terminal session to log this account back in")
-                    row.addSubview_(login)
-                else:
-                    row.addSubview_(
-                        self._icon_button(
-                            "terminal",
-                            "New Terminal session on this account",
-                            "isolatedSession:",
-                            layout.session_button,
-                            slot=account.number,
-                        )
+            if account.session_available and not expired:
+                row.addSubview_(
+                    self._icon_button(
+                        "terminal",
+                        "New Terminal session on this account",
+                        "isolatedSession:",
+                        layout.session_button,
+                        slot=account.number,
                     )
+                )
 
         @objc.python_method
         def _scroll_document(self, root, viewport: Rect, document_height: float, *, identifier: str):
@@ -824,15 +822,23 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
         def activate_slot(self, slot: str) -> None:
             """Switch in one click: routine and reversible, so no confirmation.
 
+            A signed-out account can't take over the live login until it has a
+            working credential, so its click signs in first and then switches.
+
             The render is deferred because this runs inside the clicked row's
             own mouse handler, and rendering replaces that row.
             """
             account = next((item for item in self.controller.view_model.accounts if item.number == slot), None)
-            if account is None or not account_can_activate(account):
+            if account is None or account.is_active:
                 return
-            self.last_message = f"Switching to {account.alias or account.email}"
-            # The controller worker calls only switcher.switch_to(slot, json_output=True).
-            self.controller.make_active(slot)
+            name = account.alias or account.email
+            if account_login_expired(account):
+                self.last_message = f"Sign in as {name} in your browser"
+                self.controller.sign_in_and_activate(slot)
+            else:
+                self.last_message = f"Switching to {name}"
+                # The controller worker calls only switcher.switch_to(slot, json_output=True).
+                self.controller.make_active(slot)
             self._dispatch_main(
                 lambda: self._render(self.controller.view_model, self.controller.title)
             )
