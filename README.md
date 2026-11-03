@@ -2,37 +2,49 @@
 
 Multi-account switcher for Claude Code. Easily switch between multiple Claude accounts without logging out, or let it switch for you before you hit a rate limit. Track usage for every account in a live dashboard, and run accounts in parallel. Works with both the Claude Code CLI and the VS Code extension.
 
+> **This is a fork** of [realiti4/claude-swap](https://github.com/realiti4/claude-swap), the work of Onur Cetinkol and its contributors. It adds a redesigned macOS menu bar app. Everything else works as it does upstream, and [About this fork](#about-this-fork) lists what's different.
+
 ## Installation
 
-### Using uv (recommended)
+### macOS, with the menu bar app
 
 ```bash
-uv tool install claude-swap
+curl -fsSL https://raw.githubusercontent.com/bballer320xu/claude-swap/main/scripts/install-menubar.sh | bash
 ```
 
-### Using pipx
+This installs [uv](https://docs.astral.sh/uv/) with Homebrew if you don't have it, installs `cswap` from this fork, and starts the menu bar app now and at every login. If you'd rather read the script first, it's at [`scripts/install-menubar.sh`](scripts/install-menubar.sh).
+
+| Option | What it does |
+| --- | --- |
+| `--ref REF` | Install a branch, tag or commit instead of `main` |
+| `--local` | Install from the checkout the script lives in |
+| `--no-service` | Install only. Don't start it now or at login |
+| `--uninstall` | Remove the app and service, and keep your accounts |
+
+Pass options after `bash -s --`, for example `... | bash -s -- --no-service`.
+
+### Any platform, command line only
 
 ```bash
-pipx install claude-swap
+uv tool install 'claude-swap @ git+https://github.com/bballer320xu/claude-swap'
 ```
+
+Don't use `uv tool install claude-swap` or `pipx install claude-swap` for this fork. Those install the upstream release from PyPI, which has the older menu.
 
 ### From source
 
 ```bash
-git clone https://github.com/realiti4/claude-swap.git
+git clone https://github.com/bballer320xu/claude-swap.git
 cd claude-swap
-uv sync
+uv sync --extra menubar
 uv run cswap help
 ```
 
 ### Updating
 
-```bash
-cswap upgrade          # uv/pipx installs on macOS/Linux: auto-detects and upgrades
-# or run your installer directly:
-uv tool upgrade claude-swap
-pipx upgrade claude-swap
-```
+On macOS, run the install command again. It updates `cswap` and restarts the menu bar app.
+
+On other platforms, or for a command-line install, run `cswap upgrade`, which pulls the latest from this fork.
 
 ## Usage
 
@@ -212,7 +224,7 @@ cswap unclaimed                 # List stashed credential entries (slot + why th
 cswap unclaimed --purge ID      # Drop one (deletes its bytes; recover with /login + `cswap add`)
 cswap tui                       # Interactive dashboard (also: bare `cswap`)
 cswap watch                     # Dashboard, opened on the live watch page
-cswap upgrade                   # Upgrade claude-swap to the latest version
+cswap upgrade                   # Upgrade claude-swap to the latest from this fork
 cswap purge                     # Remove all claude-swap data
 ```
 
@@ -251,12 +263,7 @@ On Linux/WSL, set `XDG_DATA_HOME` to override the default location.
 <details>
 <summary>Optional macOS menu bar app — usage at a glance, click to switch</summary>
 
-Needs the `menubar` extra (macOS only):
-
-```bash
-uv tool install 'claude-swap[menubar]'   # or: pipx install 'claude-swap[menubar]'
-cswap menubar
-```
+The [macOS install command](#macos-with-the-menu-bar-app) sets this up. To run it by hand from a checkout, use `uv run --extra menubar cswap menubar`.
 
 Click the status item for a small popover with one row per account: a colored badge, the email and plan, then a line for each limit with its bar, percent, time left and reset time. Hover a row for spend detail and the last update. **Click a row to switch** the global Claude Code login, in one click with no confirmation. Click a signed-out row and it opens your browser to sign in, then switches. Hovering a row also shows a Terminal icon, which opens a new window running `cswap run <account>`, isolated to that window, for inactive OAuth accounts. The first time may ask you to allow Terminal automation; if you denied it, re-enable it under **System Settings → Privacy & Security → Automation**. The ⋯ button has the strategy switches (**Most room**, **Next with room**, **Next in order**, off when no other account has a live login, and able to land on a signed-out account when only some are, so hold those out with `cswap disable`), the TUI's add / disable-enable / remove actions and switch history. Enable *Settings → Auto-switch* to run the same engine as [`cswap auto`](#automatic-switching) in the background; it shares the `autoswitch.*` settings, so the menu bar and CLI stay in sync. Off until you turn it on.
 
@@ -290,7 +297,7 @@ cswap config set autoswitch.threshold 80  # validated: rejects out-of-range valu
 cswap config set autoswitch.weeklyThreshold 97  # own switch line for the 7-day/per-model windows
 cswap config set autoswitch.model Fable   # per-model switching (see "auto"); Fable,Opus for several
 cswap config set run.shareHistory true    # every cswap run shares chat history (see "run")
-cswap config set updates.check false      # no daily PyPI lookup for the "newer version" hint
+cswap config set updates.check false      # no daily PyPI lookup for the "newer version" hint (this fork's builds skip it anyway)
 cswap config set usage.headerProbe true   # opt in: setup-token usage via a 1-token request (see "add-token")
 cswap config unset autoswitch.threshold   # back to the default
 cswap config path                         # where settings.json lives
@@ -441,3 +448,27 @@ pipx uninstall claude-swap
 ## License
 
 MIT
+
+## About this fork
+
+**What's different from upstream:**
+
+- **A new menu bar app.** A native popover replaces the old text menu, built on [#156](https://github.com/realiti4/claude-swap/pull/156) by Milad Imen and then redesigned. Each account shows one line per limit with a bar, percent, time left and reset time.
+- **One-click switching.** Click an account to switch, with no confirmation.
+- **Sign in from the menu.** Click a signed-out account and it opens your browser to sign in, then switches. Upstream makes you run `/login` and `cswap add` by hand.
+- **Logins made inside a session now count.** Upstream stops checking an account once its login has expired, so a `/login` inside `cswap run` never reached it.
+- **No update nag.** Builds carry a `+popover` version, so `cswap` doesn't compare them to PyPI releases.
+- **The `menubar` extra** depends on PyObjC instead of `rumps`.
+
+**Limits to know about:**
+
+- Switching accounts still disconnects Remote Control in running Claude Code sessions, the same as upstream. Run `/remote-control` in each one to reconnect.
+- With only some logins expired, **Next with room** and **Next in order** can land on an expired one. `cswap disable <account>` holds it out of rotation.
+
+**Pulling in upstream changes:** add `realiti4/claude-swap` as a remote named `upstream`, then:
+
+```bash
+git fetch upstream
+git rebase upstream/main
+uv run --extra menubar pytest
+```

@@ -274,7 +274,9 @@ class MenuBarController:
         except BaseException as error:
             self._remove_login_dir(login_dir)
             self._login_finished(slot)
-            self._dispatch_main(lambda: self._sign_in_failed(error))
+            # Bound now: Python deletes `error` when this block ends, before a
+            # deferred callback runs.
+            self._dispatch_main(lambda failure=error: self._sign_in_failed(failure))
             return
         finally:
             with self._state_lock:
@@ -325,7 +327,7 @@ class MenuBarController:
         self._submit(lambda: self.terminal_launcher(slot), self._terminal_complete)
 
     def rotate(self, strategy: str | None) -> None:
-        """Run one legacy rotate strategy on the serialized worker."""
+        """Run one rotate strategy on the serialized worker."""
         self._submit(
             lambda: self.switcher.switch(strategy=strategy, json_output=True), self._switch_failed
         )
@@ -447,7 +449,9 @@ class MenuBarController:
             with self._state_lock:
                 stopped = self._stopped
             if not stopped:
-                self._dispatch_main(lambda: error_handler(error))
+                # Bound now: Python deletes `error` when this block ends, before
+                # a deferred callback runs.
+                self._dispatch_main(lambda failure=error: error_handler(failure))
         else:
             self._dispatch_main(lambda: self._worker_succeeded(result))
         finally:

@@ -268,6 +268,9 @@ def held_back_release_notice(current_version: str) -> str | None:
 
 def check_for_update(current_version: str) -> str | None:
     """Return a notification string if a newer version exists, else None."""
+    if "+" in current_version:
+        # A local build (0.30.0b1+popover) has no release on PyPI to compare to.
+        return None
     try:
         method = _detect_install_method()
         cached_data = read_cache(CACHE_PATH, CACHE_TTL)

@@ -1,99 +1,16 @@
-"""Public façade for the native macOS ``cswap menubar`` surface.
+"""Entry point for the native macOS ``cswap menubar`` app.
 
-Import-safe presentation helpers remain available to CLI and test callers on
-all platforms. The PyObjC implementation is imported only at launch time.
+Import-safe on every platform: PyObjC loads only when the app launches. The
+popover itself lives in ``menubar_appkit``, its state in ``menubar_controller``,
+its data in ``menubar_viewmodel`` and its geometry in ``menubar_layout``.
 """
 
 from __future__ import annotations
 
-import logging
-import os
 import platform
-import plistlib
 import sys
-from pathlib import Path
 
-from claude_swap.menubar_controller import MenuBarController
-from claude_swap.menubar_viewmodel import (
-    AUTO_THRESHOLD_CHOICES,
-    EMPTY_SNAPSHOT,
-    ICON,
-    REFRESH_CHOICES,
-    SWITCH_HISTORY_LIMIT,
-    TITLE_PCT_CHOICES,
-    CapacityState,
-    FreshnessState,
-    MenuBarPopoverViewModel,
-    MenuBarSettings,
-    PopoverAccountViewModel,
-    UsageRowViewModel,
-    UsageScope,
-    _account_display_usage,
-    _adapt_snapshot,
-    _live_countdown,
-    _local_part,
-    _resets_at_ts,
-    _rolled_weekly_window,
-    _usage_log_key,
-    _window_pct,
-    format_account_label,
-    format_title,
-    format_usage_log,
-    parse_switch_history,
-    popover_view_model,
-    tightest_pct,
-    usage_summary,
-)
 from claude_swap.printer import warning
-from claude_swap.switcher import SENTINEL_NOTES
-
-NOTIFICATION_BUNDLE_ID = "com.claude-swap.menubar"
-
-
-def ensure_notification_identity(
-    executable: Path | None = None,
-    *,
-    platform: str = sys.platform,
-) -> Path | None:
-    """Ensure rumps can resolve a bundle identifier for notifications.
-
-    Fallback for runs outside the wrapper bundle (``claude_swap.app_bundle``),
-    whose Info.plist already carries the identifier: a bare command-line
-    interpreter has no app bundle, so rumps looks for an ``Info.plist`` beside
-    it. uv/pipx reinstalls can recreate that environment; repair the tiny
-    plist on every launch when needed.
-    """
-    if platform != "darwin":
-        return None
-    path = (executable or Path(sys.executable)).parent / "Info.plist"
-    data: dict = {}
-    try:
-        if path.exists():
-            try:
-                loaded = plistlib.loads(path.read_bytes())
-            except Exception:
-                loaded = None  # unreadable/corrupt — rebuild from scratch
-            if isinstance(loaded, dict):
-                data = loaded
-        changed = False
-        if not data.get("CFBundleIdentifier"):
-            data["CFBundleIdentifier"] = NOTIFICATION_BUNDLE_ID
-            changed = True
-        if not data.get("CFBundleName"):
-            data["CFBundleName"] = "claude-swap"
-            changed = True
-        if changed or not path.exists():
-            # atomic: an interrupted write must not leave a half-written plist
-            tmp = path.with_name(path.name + ".tmp")
-            tmp.write_bytes(plistlib.dumps(data))
-            os.replace(tmp, path)
-    except (OSError, plistlib.InvalidFileException, ValueError) as exc:
-        logging.getLogger("claude-swap").warning(
-            "Could not prepare menu-bar notification identity: %s", exc
-        )
-        return None
-    return path
-
 
 # macOS 26 stopped drawing status items for processes launched through an
 # exec trampoline, and a CPython *framework* build is exactly that: its
@@ -109,7 +26,6 @@ def ensure_notification_identity(
 #   uv 3.13.15        sys._framework ''         status item drawn
 #
 # The interpreter version is not the variable; the build is.
-
 
 MIN_AFFECTED_MACOS = 26
 
@@ -185,8 +101,6 @@ def run(switcher) -> int:
     # key on. Returns only when staying in this interpreter (already bundled,
     # opted out, framework build, or the bundle could not be built).
     app_bundle.maybe_reexec(switcher.backup_dir)
-    if not app_bundle.in_bundle():
-        ensure_notification_identity()
     _warn = framework_build_warning()
     if _warn:
         # stderr, not stdout: launchd sends stdout to the .log file where it
@@ -196,43 +110,3 @@ def run(switcher) -> int:
         warning(_warn, file=sys.stderr)
 
     return run_native_menubar(switcher)
-
-
-__all__ = [
-    "AUTO_THRESHOLD_CHOICES",
-    "CapacityState",
-    "EMPTY_SNAPSHOT",
-    "FreshnessState",
-    "MIN_AFFECTED_MACOS",
-    "ICON",
-    "MenuBarController",
-    "MenuBarPopoverViewModel",
-    "MenuBarSettings",
-    "NOTIFICATION_BUNDLE_ID",
-    "PopoverAccountViewModel",
-    "REFRESH_CHOICES",
-    "SENTINEL_NOTES",
-    "SWITCH_HISTORY_LIMIT",
-    "TITLE_PCT_CHOICES",
-    "UsageRowViewModel",
-    "UsageScope",
-    "_account_display_usage",
-    "_adapt_snapshot",
-    "_live_countdown",
-    "_local_part",
-    "_macos_major",
-    "_resets_at_ts",
-    "_rolled_weekly_window",
-    "_usage_log_key",
-    "_window_pct",
-    "ensure_notification_identity",
-    "framework_build_warning",
-    "format_account_label",
-    "format_title",
-    "format_usage_log",
-    "parse_switch_history",
-    "popover_view_model",
-    "run",
-    "tightest_pct",
-    "usage_summary",
-]

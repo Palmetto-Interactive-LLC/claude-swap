@@ -29,7 +29,6 @@ from claude_swap.models import AccountsSnapshot
 from claude_swap.switcher import SENTINEL_NOTES
 from claude_swap.usage_store import SERVE_TTL_S, STALE_OK_S, UsageEntry
 
-ICON = "⇄"
 REFRESH_CHOICES: tuple[int, ...] = (30, 60, 300)
 AUTO_THRESHOLD_CHOICES: tuple[int, ...] = (80, 90, 95, 98)
 TITLE_PCT_CHOICES: tuple[str, ...] = ("off", "5h", "7d", "both")
@@ -116,10 +115,8 @@ class UsageRowViewModel:
     label: str
     scope: UsageScope
     used_percent: float
-    available_percent: float
     reset_text: str | None
     state: CapacityState
-    state_label: str
     ahead_of_pace: bool = False
     limit_reached: bool = False
     amount_text: str | None = None
@@ -140,11 +137,10 @@ class PopoverAccountViewModel:
     freshness_detail: str
     sentinel: str | None
     sentinel_note: str | None
-    has_last_good: bool
-    capacity_summary: str
     rows: tuple[UsageRowViewModel, ...]
     session_available: bool
     plan_label: str | None = None
+    rejected_text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -156,22 +152,6 @@ class MenuBarPopoverViewModel:
 
 
 # ---- Formatting helpers ------------------------------------------------------
-
-def tightest_pct(usage: dict | str | None) -> float | None:
-    """Highest 5h/7d utilization percentage, or None if unknown.
-
-    Surfaces the binding window's utilization for display. Spend is excluded —
-    it isn't a rate-limit window.
-    """
-    if not isinstance(usage, dict):
-        return None
-    pcts = [
-        window["pct"]
-        for window in (usage.get("five_hour"), usage.get("seven_day"))
-        if isinstance(window, dict) and isinstance(window.get("pct"), (int, float))
-    ]
-    return max(pcts) if pcts else None
-
 
 def _window_pct(usage: dict | str | None, key: str) -> float | None:
     """Utilization pct for a usage window (``five_hour``/``seven_day``), or None."""
@@ -244,85 +224,6 @@ def _rolled_weekly_window(window: dict | None, now: float) -> dict | None:
     return rolled
 
 
-def usage_summary(
-    usage: dict | str | None, now: float | None = None, fetched_at: float | None = None
-) -> str:
-    """One-line usage summary for an account row (reset countdown computed live).
-
-    ``fetched_at`` is the underlying measurement's fetch time (may be older
-    than ``now`` when serving last-good data) — used only to flag a weekly
-    window that's meaningfully ahead of pace (issue #125), never the 5h one.
-    """
-    if isinstance(usage, str):
-        return usage
-    if usage is None:
-        return "usage unavailable"
-    if now is None:
-        now = time.time()
-    parts: list[str] = []
-    rejected = usage.get("rejected")
-    if isinstance(rejected, dict):
-        # A refused setup-token probe leads the row: the account is at its
-        # limit until the refusal ends, however low the windows below read.
-        seg = "rejected (!)"
-        countdown = _live_countdown(rejected, now)
-        if countdown:
-            seg += f" ({countdown})"
-        parts.append(seg)
-    for key, label in (("five_hour", "5h"), ("seven_day", "7d")):
-        window = usage.get(key)
-        pace_result = None
-        if key == "seven_day":
-            window = _rolled_weekly_window(window, now)  # reflect a passed weekly reset
-            # Pace against the rolled window, not the raw one: a stale window
-            # rolled to 0% has no current-cycle data to compare against, so
-            # its (correctly zeroed) pct naturally never reads as "ahead" —
-            # computing pace pre-roll would otherwise pair last cycle's high
-            # pct with this cycle's freshly-reset 0% display.
-            pace_result = pace.compute_pace(window, fetched_at=fetched_at)
-        if isinstance(window, dict) and isinstance(window.get("pct"), (int, float)):
-            seg = f"{label} {window['pct']:.0f}%"
-            if key == "seven_day" and pace_result and pace_result.ahead:
-                seg += " (ahead)"
-            countdown = _live_countdown(window, now)
-            if countdown:
-                seg += f" ({countdown})"  # time until this window resets
-            parts.append(seg)
-    # Per-model weekly limits (e.g. Fable), from the usage API's ``limits`` array.
-    for window in usage.get("scoped") or []:
-        window = _rolled_weekly_window(window, now)  # weekly cadence, same roll-forward
-        pace_result = pace.compute_pace(window, fetched_at=fetched_at)  # against the rolled window, see above
-        if isinstance(window, dict) and isinstance(window.get("pct"), (int, float)) and window.get("name"):
-            seg = f"{window['name']} {window['pct']:.0f}%"
-            if window["pct"] >= 100:
-                seg += " (!)"  # maxed model — the usual reason to switch
-            elif pace_result and pace_result.ahead:
-                seg += " (ahead)"
-            countdown = _live_countdown(window, now)
-            if countdown:
-                seg += f" ({countdown})"
-            parts.append(seg)
-    spend = usage.get("spend")
-    if isinstance(spend, dict) and isinstance(spend.get("pct"), (int, float)):
-        parts.append(f"$ {spend['pct']:.0f}%")
-    return " · ".join(parts) if parts else "usage unavailable"
-
-
-def format_account_label(
-    num,
-    email: str,
-    usage: dict | str | None,
-    now: float | None = None,
-    alias: str | None = None,
-    disabled: bool = False,
-    fetched_at: float | None = None,
-) -> str:
-    """Build one account row's menu label."""
-    label = f"{alias}  ({email})" if alias else email
-    marker = "  (disabled)" if disabled else ""
-    return f"{num}  {label}{marker}  {usage_summary(usage, now, fetched_at)}"
-
-
 def _local_part(email: str, limit: int = 12) -> str:
     """Email text before '@', truncated with a trailing '*' marker."""
     local = email.split("@", 1)[0]
@@ -340,7 +241,7 @@ def format_title(
 ) -> str:
     """Build the menu-bar title from the active account and settings."""
     if active_email is None:
-        return ICON
+        return ""
     if now is None:
         now = time.time()
     segments: list[str] = []
@@ -366,8 +267,8 @@ def format_title(
             if isinstance(window, dict) and isinstance(window.get("pct"), (int, float)) and window.get("name"):
                 segments.append(f"{window['name']} {window['pct']:.0f}%")
     if not segments:
-        return ICON
-    return f"{ICON} " + " · ".join(segments)
+        return ""
+    return " · ".join(segments)
 
 
 def format_usage_log(email: str, usage: dict | str | None) -> str | None:
@@ -471,15 +372,6 @@ def _capacity_state(percent: float) -> CapacityState:
     return CapacityState.AVAILABLE
 
 
-def _state_label(state: CapacityState) -> str:
-    return {
-        CapacityState.AVAILABLE: "Available",
-        CapacityState.NEAR_LIMIT: "Near limit",
-        CapacityState.LIMIT_REACHED: "Limit reached",
-        CapacityState.UNAVAILABLE: "Unavailable",
-    }[state]
-
-
 def _spend_amount_text(window: dict) -> str | None:
     used, limit = window.get("used"), window.get("limit")
     if not isinstance(used, (int, float)) or not isinstance(limit, (int, float)):
@@ -520,10 +412,8 @@ def _usage_row(
         label=label,
         scope=scope,
         used_percent=percent,
-        available_percent=max(0.0, 100.0 - percent),
         reset_text=_live_countdown(window, now),
         state=state,
-        state_label=_state_label(state),
         ahead_of_pace=bool(pace_result and pace_result.ahead) and not limit_reached,
         limit_reached=limit_reached,
         amount_text=_spend_amount_text(window) if scope is UsageScope.SPEND else None,
@@ -572,30 +462,14 @@ def _popover_rows(entry: UsageEntry, now: float) -> tuple[UsageRowViewModel, ...
     return tuple(rows)
 
 
-def _capacity_summary(
-    rows: tuple[UsageRowViewModel, ...],
-    rejected: object = None,
-    now: float | None = None,
-    sentinel: str | None = None,
-) -> str:
-    """The tightest quota headroom for a compact account header.
-
-    Spend is shown as a budget row, not a rate-limit window, so it cannot make
-    an account's capacity summary look constrained. A refused setup-token probe
-    leads instead: the account is at its limit until the refusal ends, however
-    low its windows read.
-    """
-    if sentinel == USAGE_RELOGIN_REQUIRED:
-        # A dead token's last-known windows say nothing about what it can do now.
-        return "Signed out"
-    if isinstance(rejected, dict):
-        countdown = _live_countdown(rejected, time.time() if now is None else now)
-        return f"Rejected {countdown}" if countdown else "Rejected"
-    quota_rows = tuple(row for row in rows if row.scope is not UsageScope.SPEND)
-    if not quota_rows:
-        return "Capacity unavailable"
-    available = min(row.available_percent for row in quota_rows)
-    return f"{available:.0f}% left"
+def _rejected_text(entry: UsageEntry, now: float) -> str | None:
+    """A refused setup-token probe: at its limit until then, whatever the windows read."""
+    usage = entry.last_good
+    rejected = usage.get("rejected") if isinstance(usage, dict) else None
+    if not isinstance(rejected, dict):
+        return None
+    countdown = _live_countdown(rejected, now)
+    return f"Rejected {countdown}" if countdown else "Rejected"
 
 
 def popover_view_model(
@@ -628,19 +502,13 @@ def popover_view_model(
                 freshness_detail=freshness_detail,
                 sentinel=sentinel,
                 sentinel_note=SENTINEL_NOTES.get(sentinel, sentinel) if sentinel else None,
-                has_last_good=account.usage.last_good is not None,
-                capacity_summary=_capacity_summary(
-                    rows,
-                    (account.usage.last_good or {}).get("rejected"),
-                    now,
-                    sentinel,
-                ),
                 rows=rows,
                 # The active default profile already owns this account's refresh
                 # token. A second profile can drift after token rotation, so only
                 # inactive OAuth accounts may start an isolated session.
                 session_available=account.kind == "oauth" and not account.is_active,
                 plan_label=subscription.plan_label((account.subscription_plan or {}).get("plan")),
+                rejected_text=_rejected_text(account.usage, now),
             )
         )
     return MenuBarPopoverViewModel(tuple(accounts), snapshot.active_number)
@@ -678,8 +546,8 @@ def account_status_text(account: PopoverAccountViewModel) -> str:
         return "Signed out"
     if account.disabled:
         return "Disabled"
-    if account.capacity_summary.startswith("Rejected"):
-        return account.capacity_summary
+    if account.rejected_text:
+        return account.rejected_text
     if account_at_limit(account):
         return "At limit"
     return ""
@@ -740,14 +608,6 @@ def account_tooltip(account: PopoverAccountViewModel) -> str:
     return "\n".join(lines)
 
 
-EMPTY_SNAPSHOT: dict[str, object] = {
-    "accounts": [],
-    "active_email": None,
-    "active_usage": None,
-    "active_alias": None,
-}
-
-
 def _adapt_snapshot(snap) -> dict:
     """Adapt an ``AccountsSnapshot`` to the menu bar's render dict.
 
@@ -778,43 +638,3 @@ def _adapt_snapshot(snap) -> dict:
         "active_usage": active_usage,
         "active_alias": active_alias,
     }
-
-
-__all__ = [
-    "account_at_limit",
-    "account_initial",
-    "usage_time_left",
-    "account_can_activate",
-    "account_login_expired",
-    "account_status_text",
-    "account_tooltip",
-    "compact_usage_rows",
-    "AUTO_THRESHOLD_CHOICES",
-    "CapacityState",
-    "DisplayUsage",
-    "EMPTY_SNAPSHOT",
-    "FreshnessState",
-    "ICON",
-    "MenuBarPopoverViewModel",
-    "MenuBarSettings",
-    "PopoverAccountViewModel",
-    "REFRESH_CHOICES",
-    "SWITCH_HISTORY_LIMIT",
-    "TITLE_PCT_CHOICES",
-    "UsageRowViewModel",
-    "UsageScope",
-    "_account_display_usage",
-    "_adapt_snapshot",
-    "_live_countdown",
-    "_local_part",
-    "_resets_at_ts",
-    "_rolled_weekly_window",
-    "_usage_log_key",
-    "_window_pct",
-    "format_account_label",
-    "format_title",
-    "format_usage_log",
-    "popover_view_model",
-    "tightest_pct",
-    "usage_summary",
-]

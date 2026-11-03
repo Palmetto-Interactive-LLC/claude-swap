@@ -25,10 +25,8 @@ def _model(account_count: int, rows_per_account: int = 2) -> MenuBarPopoverViewM
         label="5h",
         scope=UsageScope.FIVE_HOUR,
         used_percent=40.0,
-        available_percent=60.0,
         reset_text="2h 0m",
         state=CapacityState.AVAILABLE,
-        state_label="Available",
     )
     accounts = tuple(
         PopoverAccountViewModel(
@@ -42,8 +40,6 @@ def _model(account_count: int, rows_per_account: int = 2) -> MenuBarPopoverViewM
             freshness_detail="Updated just now",
             sentinel=None,
             sentinel_note=None,
-            has_last_good=True,
-            capacity_summary="60% left",
             rows=(row,) * rows_per_account,
             session_available=index != 0,
         )
@@ -80,7 +76,7 @@ class NativeMenuBarAppKitSmokeTests(unittest.TestCase):
             def __init__(self, *_args, **_kwargs) -> None:
                 self.settings = MenuBarSettings()
                 self.view_model = model
-                self.title = "⇄"
+                self.title = ""
                 self.history = []
 
             def bind_ui(self, renderer, _message) -> None:
@@ -120,8 +116,8 @@ class NativeMenuBarAppKitSmokeTests(unittest.TestCase):
         status_bar = AppKit.NSStatusBar.systemStatusBar()
         item = status_bar.statusItemWithLength_(AppKit.NSVariableStatusItemLength)
         try:
-            item.button().setTitle_("⇄")
-            self.assertEqual(item.button().title(), "⇄")
+            item.button().setTitle_("")
+            self.assertEqual(item.button().title(), "")
         finally:
             status_bar.removeStatusItem_(item)
         self.assertIsNotNone(application)
@@ -147,12 +143,12 @@ class NativeMenuBarAppKitSmokeTests(unittest.TestCase):
 
     def test_status_item_uses_a_template_image_not_a_text_glyph(self) -> None:
         _application, host = self._host(_model(1))
-        host._render(_model(1), "⇄ matt 5h 10%")
+        host._render(_model(1), "matt 5h 10%")
 
         button = host.status_item.button()
         self.assertTrue(button.image().isTemplate())
         self.assertEqual(str(button.title()), "matt 5h 10%")
-        host._render(_model(1), "⇄")
+        host._render(_model(1), "")
         self.assertEqual(str(button.title()), "")
 
     def test_clicking_a_row_switches_in_one_step_with_no_alert(self) -> None:

@@ -808,3 +808,14 @@ class TestRunSelfUpgradeWindows:
         assert "uv tool upgrade claude-swap" in err
         assert "pipx upgrade claude-swap" in err
         assert "pip install --upgrade claude-swap" in err
+
+
+def test_a_local_build_has_no_release_to_compare_to(monkeypatch):
+    from claude_swap import update_check
+
+    def no_lookup(*_args, **_kwargs):
+        raise AssertionError("a local build must not look at PyPI")
+
+    monkeypatch.setattr(update_check, "_latest_version", no_lookup)
+
+    assert update_check.check_for_update("0.30.0b1+popover") is None

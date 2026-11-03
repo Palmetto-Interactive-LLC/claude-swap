@@ -603,3 +603,55 @@ def test_quitting_stops_a_waiting_sign_in(tmp_path: Path) -> None:
 
     assert terminated.is_set()
     _wait_until(lambda: not controller._logins)
+
+
+def test_a_deferred_failure_still_reaches_the_user(tmp_path: Path) -> None:
+    """The real app queues callbacks on the main thread, after `except` has ended."""
+    switcher = _SignInSwitcher(tmp_path)
+    queue: list[Callable[[], None]] = []
+    messages: list[tuple[str, str]] = []
+    failed = threading.Event()
+
+    def boom(*_args, **_kwargs):
+        failed.set()
+        raise RuntimeError("no such account")
+
+    switcher.switch_to = boom
+    controller = MenuBarController(
+        switcher,
+        snapshot_source=_SnapshotSource(_snapshot()),
+        dispatch_main=queue.append,
+    )
+    controller.bind_ui(lambda _model, _title: None, lambda title, text: messages.append((title, text)))
+
+    controller.make_active("2")
+    _wait_for(failed)
+    _wait_until(lambda: queue)
+    queue.pop(0)()
+
+    assert messages == [("Couldn't switch account", "no such account")]
+    controller.stop()
+
+
+def test_a_deferred_sign_in_failure_still_reaches_the_user(tmp_path: Path) -> None:
+    switcher = _SignInSwitcher(tmp_path)
+    queue: list[Callable[[], None]] = []
+    messages: list[tuple[str, str]] = []
+
+    def runner(_login_dir: Path, _email: str, _on_start) -> int:
+        raise RuntimeError("no browser")
+
+    controller = MenuBarController(
+        switcher,
+        snapshot_source=_SnapshotSource(_snapshot()),
+        dispatch_main=queue.append,
+        login_runner=runner,
+    )
+    controller.bind_ui(lambda _model, _title: None, lambda title, text: messages.append((title, text)))
+
+    controller.sign_in_and_activate("2")
+    _wait_until(lambda: queue)
+    queue.pop(0)()
+
+    assert messages == [("Couldn't sign in", "no browser")]
+    controller.stop()

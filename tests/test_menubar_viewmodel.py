@@ -78,7 +78,6 @@ def test_popover_model_preserves_usage_semantics_without_fetching() -> None:
     assert model.active_number == "1"
     assert account.display_name == "work"
     assert account.disabled and account.freshness is viewmodel.FreshnessState.FRESH
-    assert account.capacity_summary == "0% left"
     assert [row.label for row in account.rows] == ["Spend", "5h", "7d", "Fable", "Opus"]
     assert rows["Spend"].amount_text == "$12.50 / $50.00"
     assert rows["Spend"].reset_text == "2h 0m"
@@ -141,7 +140,6 @@ def test_popover_model_retains_last_good_below_sentinel_and_rolls_weekly() -> No
 
     assert stale.sentinel == USAGE_TOKEN_EXPIRED
     assert stale.sentinel_note == SENTINEL_NOTES[USAGE_TOKEN_EXPIRED]
-    assert stale.has_last_good
     assert stale.freshness is viewmodel.FreshnessState.STALE
     assert stale_rows["5h"].used_percent == 92.0
     assert stale_rows["5h"].reset_text is None
@@ -152,9 +150,7 @@ def test_popover_model_retains_last_good_below_sentinel_and_rolls_weekly() -> No
     assert not stale_rows["Fable"].ahead_of_pace
 
     assert unavailable.sentinel == USAGE_TOKEN_EXPIRED
-    assert not unavailable.has_last_good
     assert unavailable.rows == ()
-    assert unavailable.capacity_summary == "Capacity unavailable"
     assert unavailable.freshness is viewmodel.FreshnessState.UNAVAILABLE
 
 
@@ -177,37 +173,6 @@ def test_capacity_ignores_spend_and_freshness_does_not_overstate_age() -> None:
 
     assert account.freshness is viewmodel.FreshnessState.FRESH
     assert account.freshness_detail == "Updated 3m ago"
-    assert account.capacity_summary == "90% left"
-
-
-def test_capacity_summary_leads_with_a_rejected_probe_over_low_windows():
-    row = viewmodel._usage_row(
-        "5h",
-        viewmodel.UsageScope.FIVE_HOUR,
-        {"pct": 3.0},
-        _NOW,
-        None,
-    )
-    resets_at = datetime.fromtimestamp(_NOW + 3600, tz=timezone.utc).isoformat()
-
-    assert viewmodel._capacity_summary((row,), {"resets_at": resets_at}, _NOW) == (
-        "Rejected 1h 0m"
-    )
-    assert viewmodel._capacity_summary((row,), {}, _NOW) == "Rejected"
-    assert viewmodel._capacity_summary((row,), None, _NOW) == "97% left"
-
-
-def test_capacity_summary_does_not_report_room_on_an_expired_login():
-    row = viewmodel._usage_row(
-        "5h", viewmodel.UsageScope.FIVE_HOUR, {"pct": 0.0}, _NOW, None
-    )
-
-    assert (
-        viewmodel._capacity_summary(
-            (row,), None, _NOW, sentinel=viewmodel.USAGE_RELOGIN_REQUIRED
-        )
-        == "Signed out"
-    )
 
 
 def _compact_account(rows, *, sentinel=None, active=False, disabled=False):
@@ -222,8 +187,6 @@ def _compact_account(rows, *, sentinel=None, active=False, disabled=False):
         freshness_detail="Updated just now",
         sentinel=sentinel,
         sentinel_note="re-login needed" if sentinel else None,
-        has_last_good=True,
-        capacity_summary="60% left",
         rows=rows,
         session_available=not active,
     )
@@ -307,7 +270,7 @@ def test_status_text_and_activation_follow_account_state():
     assert viewmodel.account_status_text(full) == "At limit"
     assert viewmodel.account_status_text(overspent) == ""
     assert (
-        viewmodel.account_status_text(replace(plain, capacity_summary="Rejected 1h 0m"))
+        viewmodel.account_status_text(replace(plain, rejected_text="Rejected 1h 0m"))
         == "Rejected 1h 0m"
     )
 
@@ -323,3 +286,15 @@ def test_tooltip_keeps_what_the_compact_row_leaves_out():
     assert "person@example.test" in tooltip
     assert "Updated just now" in tooltip
     assert "7d: 40%, resets in 1h 0m (" in tooltip
+
+
+def test_rejected_text_leads_with_its_countdown():
+    resets_at = datetime.fromtimestamp(_NOW + 3600, tz=timezone.utc).isoformat()
+
+    def entry(usage):
+        return UsageEntry(last_good=usage, age_s=1.0)
+
+    assert viewmodel._rejected_text(entry({"rejected": {"resets_at": resets_at}}), _NOW) == "Rejected 1h 0m"
+    assert viewmodel._rejected_text(entry({"rejected": {}}), _NOW) == "Rejected"
+    assert viewmodel._rejected_text(entry({"five_hour": {"pct": 3.0}}), _NOW) is None
+    assert viewmodel._rejected_text(entry(None), _NOW) is None

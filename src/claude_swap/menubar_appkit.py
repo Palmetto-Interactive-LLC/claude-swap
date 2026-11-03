@@ -28,7 +28,6 @@ from claude_swap.menubar_layout import (
 from claude_swap.menubar_controller import MenuBarController
 from claude_swap.menubar_viewmodel import (
     AUTO_THRESHOLD_CHOICES,
-    ICON,
     REFRESH_CHOICES,
     TITLE_PCT_CHOICES,
     CapacityState,
@@ -134,11 +133,6 @@ def _status_icon():
     image.setTemplate_(True)
     image.setAccessibilityDescription_("Claude accounts")
     return image
-
-
-def _title_text(title: str) -> str:
-    """The status text beside the icon, without the plain-text fallback glyph."""
-    return title.removeprefix(ICON).strip()
 
 
 def _create_native_menubar(switcher: ClaudeAccountSwitcher):
@@ -861,7 +855,7 @@ def _create_native_menubar(switcher: ClaudeAccountSwitcher):
 
         @objc.python_method
         def _render(self, model: MenuBarPopoverViewModel, title: str) -> None:
-            self.status_item.button().setTitle_(_title_text(title))
+            self.status_item.button().setTitle_(title)
             timer = getattr(self, "refresh_timer", None)
             if timer is not None and int(round(timer.timeInterval())) != self.controller.settings.refresh_interval:
                 self._install_refresh_timer()
