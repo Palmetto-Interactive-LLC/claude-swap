@@ -99,10 +99,9 @@ def resolve_cswap_executable(cswap_executable: str | Path = "cswap") -> Path:
     resolved = next((path for candidate in candidates if (path := shutil.which(candidate))), None)
     if resolved is None:
         raise ValueError(f"cswap executable was not found or is not executable: {executable}")
-    try:
-        path = Path(resolved).resolve(strict=True)
-    except OSError as error:
-        raise ValueError(f"cswap executable could not be resolved: {executable}") from error
+    # Absolute, but don't follow symlinks: an entry point may be a wrapper that
+    # dispatches on the name it was called by, as a self-healing launcher does.
+    path = Path(resolved).absolute()
     if not path.is_file() or not os.access(path, os.X_OK):
         raise ValueError(f"cswap executable was not found or is not executable: {executable}")
     return path

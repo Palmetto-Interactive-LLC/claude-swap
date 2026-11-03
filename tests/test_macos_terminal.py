@@ -86,6 +86,17 @@ def test_launch_terminal_rejects_non_executable_file(tmp_path: Path):
     run.assert_not_called()
 
 
+def test_symlinked_entry_point_keeps_the_name_it_was_called_by(tmp_path: Path):
+    """A wrapper symlinked as cswap dispatches on $0, so resolving it breaks it."""
+    wrapper = tmp_path / "launcher.sh"
+    wrapper.write_text("#!/bin/sh\n")
+    wrapper.chmod(0o755)
+    link = tmp_path / "cswap"
+    link.symlink_to(wrapper)
+
+    assert macos_terminal.resolve_cswap_executable(str(link)) == link
+
+
 def test_launch_terminal_resolves_bare_cswap_to_absolute_path(cswap_executable: Path):
     with (
         patch(
