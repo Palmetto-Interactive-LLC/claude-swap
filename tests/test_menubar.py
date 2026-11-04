@@ -357,7 +357,7 @@ def test_run_without_appkit_raises_clean_error(monkeypatch):
     from claude_swap import menubar_appkit
 
     monkeypatch.setattr(menubar_appkit, "APPKIT_AVAILABLE", False)
-    with pytest.raises(ClaudeSwitchError, match=r"bballer320xu/claude-swap#macos-with-the-menu-bar-app"):
+    with pytest.raises(ClaudeSwitchError, match=r"Palmetto-Interactive-LLC/claude-swap#macos-with-the-menu-bar-app"):
         menubar.run(switcher=None)
 
 

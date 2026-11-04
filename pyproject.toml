@@ -35,8 +35,8 @@ classifiers = [
 menubar = ["pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'"]
 
 [project.urls]
-Homepage = "https://github.com/bballer320xu/claude-swap"
-Repository = "https://github.com/bballer320xu/claude-swap"
+Homepage = "https://github.com/Palmetto-Interactive-LLC/claude-swap"
+Repository = "https://github.com/Palmetto-Interactive-LLC/claude-swap"
 Upstream = "https://github.com/realiti4/claude-swap"
 
 [project.scripts]

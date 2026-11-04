@@ -2,13 +2,13 @@
 #
 # Install claude-swap's macOS menu bar app from this fork, and start it at login.
 #
-#   curl -fsSL https://raw.githubusercontent.com/bballer320xu/claude-swap/main/scripts/install-menubar.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Palmetto-Interactive-LLC/claude-swap/main/scripts/install-menubar.sh | bash
 #
 # Options go after: | bash -s -- --help
 
 set -euo pipefail
 
-REPO_URL="https://github.com/bballer320xu/claude-swap"
+REPO_URL="https://github.com/Palmetto-Interactive-LLC/claude-swap"
 PYTHON_VERSION="3.13"
 APP_BUNDLE="${CSWAP_APP_BUNDLE:-/Applications/claude-swap Menubar.app}"
 SERVICE_LOG="$HOME/Library/Logs/com.cswap.menubar.err"

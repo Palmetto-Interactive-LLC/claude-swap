@@ -373,7 +373,7 @@ def run_self_upgrade(current_version: str | None = None) -> int:
             "  uv tool upgrade claude-swap\n"
             "  pipx upgrade claude-swap\n"
             f"  {sys.executable} -m pip install --upgrade "
-            "'claude-swap @ git+https://github.com/bballer320xu/claude-swap'\n"
+            "'claude-swap @ git+https://github.com/Palmetto-Interactive-LLC/claude-swap'\n"
             "If you installed with `pip install -e .`, use `git pull` instead."
         )
         return 1
