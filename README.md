@@ -467,10 +467,17 @@ MIT
 - Switching accounts still disconnects Remote Control in running Claude Code sessions, the same as upstream. Run `/remote-control` in each one to reconnect.
 - With only some logins expired, **Next with room** and **Next in order** can land on an expired one. `cswap disable <account>` holds it out of rotation.
 
-**Pulling in upstream changes:** add `realiti4/claude-swap` as a remote named `upstream`, then:
+**Pulling in upstream changes:** `main` is protected, so changes land by pull request with signed commits, and force pushes are blocked. Upstream's commits are mostly unsigned, so each sync comes in as one signed commit. Apply only what's new since the last sync, because merging upstream directly raises false conflicts on later syncs.
+
+Last synced upstream commit: `e86b19b`
+
+Add `realiti4/claude-swap` as a remote named `upstream`, then:
 
 ```bash
 git fetch upstream
-git rebase upstream/main
+git switch -c sync-upstream main
+git diff --binary <last synced commit>..upstream/main | git apply --3way --index
 uv run --extra menubar pytest
 ```
+
+Fix any conflicts and `git add` them. This org requires actions pinned to commit SHAs, so re-pin any workflow action upstream changed. Update the commit above to the new `upstream/main`, commit, and open a pull request. Merges are squash only, and `test`, `test-windows` and `macos-keychain` must pass.
