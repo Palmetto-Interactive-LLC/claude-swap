@@ -80,7 +80,7 @@ def require_appkit() -> None:
     if not APPKIT_AVAILABLE:
         raise ClaudeSwitchError(
             "Menu bar mode requires PyObjC/AppKit. Install it with this fork's script: "
-            "https://github.com/bballer320xu/claude-swap#macos-with-the-menu-bar-app"
+            "https://github.com/Palmetto-Interactive-LLC/claude-swap#macos-with-the-menu-bar-app"
         )
 
 

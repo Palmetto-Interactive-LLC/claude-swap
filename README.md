@@ -9,7 +9,7 @@ Multi-account switcher for Claude Code. Easily switch between multiple Claude ac
 ### macOS, with the menu bar app
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bballer320xu/claude-swap/main/scripts/install-menubar.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Palmetto-Interactive-LLC/claude-swap/main/scripts/install-menubar.sh | bash
 ```
 
 This installs [uv](https://docs.astral.sh/uv/) with Homebrew if you don't have it, installs `cswap` from this fork, and starts the menu bar app now and at every login. If you'd rather read the script first, it's at [`scripts/install-menubar.sh`](scripts/install-menubar.sh).
@@ -26,7 +26,7 @@ Pass options after `bash -s --`, for example `... | bash -s -- --no-service`.
 ### Any platform, command line only
 
 ```bash
-uv tool install 'claude-swap @ git+https://github.com/bballer320xu/claude-swap'
+uv tool install 'claude-swap @ git+https://github.com/Palmetto-Interactive-LLC/claude-swap'
 ```
 
 Don't use `uv tool install claude-swap` or `pipx install claude-swap` for this fork. Those install the upstream release from PyPI, which has the older menu.
@@ -34,7 +34,7 @@ Don't use `uv tool install claude-swap` or `pipx install claude-swap` for this f
 ### From source
 
 ```bash
-git clone https://github.com/bballer320xu/claude-swap.git
+git clone https://github.com/Palmetto-Interactive-LLC/claude-swap.git
 cd claude-swap
 uv sync --extra menubar
 uv run cswap help

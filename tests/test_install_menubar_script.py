@@ -109,7 +109,7 @@ def test_installs_the_fork_with_a_managed_python_and_starts_the_service(stubs: _
     install = next(line for line in stubs.logged if line.startswith("uv tool install"))
     assert "--managed-python" in install
     assert "--python 3.13" in install
-    assert "claude-swap[menubar] @ git+https://github.com/bballer320xu/claude-swap@main" in install
+    assert "claude-swap[menubar] @ git+https://github.com/Palmetto-Interactive-LLC/claude-swap@main" in install
     assert "cswap menubar --install-service" in stubs.logged
     assert "running (pid 42)" in result.stdout
     assert "cswap add" in result.stdout
