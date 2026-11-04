@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from claude_swap import macos_terminal
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="macOS Terminal launching, POSIX executables")
 
 
 def _completed(returncode: int, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess[str]:
