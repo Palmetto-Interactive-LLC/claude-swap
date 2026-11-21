@@ -6,7 +6,7 @@ on:
 
 jobs:
   publish:
-    runs-on: membl
+    runs-on: ubuntu-latest
     permissions:
       id-token: write
 
