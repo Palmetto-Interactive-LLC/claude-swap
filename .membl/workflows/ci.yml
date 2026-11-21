@@ -1,0 +1,44 @@
+# Native Membl workflow (v1). Live execution today uses .github/workflows/*
+# until MEMBL-421 lands and the control plane dispatches Check Runs from this
+# file. Keep job id `ci` so the required context stays `CI / ci`.
+version: 1
+name: CI
+
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  policy: cancel-superseded-pr
+
+defaults:
+  compute:
+    intent: balanced
+    size: membl
+  cache:
+    preset: [uv]
+
+env:
+  CI: "1"
+
+jobs:
+  base-checks:
+    name: Base checks
+    permissions:
+      contents: read
+    timeout-minutes: 20
+    steps:
+      - uses: checkout
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run pytest
+        run: uv sync --locked && uv run pytest
+
+  # Required check name: CI / ci (gate aggregates base-checks; no soft skip).
+  ci:
+    type: gate
+    needs: [base-checks]
